@@ -4,9 +4,9 @@ use crate::config::AtriumConfig;
 use crate::pages::{
     docs as docs_page,
     home::{self, HomeContext, HomeIntent},
-    purge as purge_page,
     settings::{self, SettingsContext, SettingsIntent},
     tidy::{self, TidyContext, TidyState},
+    tools::{self, ToolsState},
     Page,
 };
 use crate::theme::{self, paint_vertical_gradient, tokens, Palette, Resolved, ThemeMode};
@@ -20,6 +20,7 @@ pub struct AtriumApp {
     pub classifier: ImportanceClassifier,
     pub env: EnvironmentReport,
     pub tidy: TidyState,
+    pub tools: ToolsState,
     pub new_protected_input: String,
     pub system_prefers_dark: bool,
     pub resolved_theme: Resolved,
@@ -39,6 +40,7 @@ impl AtriumApp {
             classifier,
             env: environment::detect(),
             tidy: TidyState::default(),
+            tools: ToolsState::default(),
             new_protected_input: String::new(),
             system_prefers_dark,
             resolved_theme: resolved,
@@ -244,7 +246,7 @@ impl eframe::App for AtriumApp {
                 };
                 match home::show(ui, &cx) {
                     HomeIntent::OpenTidy => self.page = Page::Tidy,
-                    HomeIntent::OpenPurge => self.page = Page::Purge,
+                    HomeIntent::OpenPurge => self.page = Page::Tools,
                     HomeIntent::OpenDocs => self.page = Page::Docs,
                     HomeIntent::OpenSettings => self.page = Page::Settings,
                     HomeIntent::None => {}
@@ -258,8 +260,8 @@ impl eframe::App for AtriumApp {
                 };
                 tidy::show(ui, &mut self.tidy, &cx, ctx);
             }
-            Page::Purge => {
-                purge_page::show(ui, self.palette(), &self.env);
+            Page::Tools => {
+                tools::show(ui, self.palette(), &mut self.tools);
             }
             Page::Docs => {
                 docs_page::show(ui, self.palette());

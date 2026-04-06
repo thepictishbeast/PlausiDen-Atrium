@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PlausiDen Atrium
+GenericName=Device Cleaner & Secure Wiper
+Comment=Unified front door to the PlausiDen civil rights toolkit
+Exec=atrium
+Icon=plausiden-atrium
+Terminal=false
+Categories=Utility;System;FileTools;Security;
+Keywords=cleanup;duplicates;wipe;shred;privacy;plausiden;tidy;purge;forensic;
+StartupNotify=true
+StartupWMClass=PlausiDen Atrium

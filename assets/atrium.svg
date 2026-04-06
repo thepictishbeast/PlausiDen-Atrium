@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5B8DEF"/>
+      <stop offset="100%" stop-color="#A45BEF"/>
+    </linearGradient>
+    <linearGradient id="arch" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0.55"/>
+    </linearGradient>
+    <filter id="softshadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+      <feOffset dx="0" dy="2"/>
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.35"/>
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Rounded gradient background -->
+  <rect x="8" y="8" width="240" height="240" rx="48" ry="48" fill="url(#bg)"/>
+
+  <!-- Inner soft vignette -->
+  <rect x="8" y="8" width="240" height="240" rx="48" ry="48"
+        fill="none" stroke="#FFFFFF" stroke-opacity="0.15" stroke-width="2"/>
+
+  <!-- Atrium arch / doorway -->
+  <g filter="url(#softshadow)">
+    <path d="M 68 192
+             L 68 116
+             Q 68 64 128 64
+             Q 188 64 188 116
+             L 188 192
+             Z"
+          fill="url(#arch)"/>
+
+    <!-- Inner doorway cutout -->
+    <path d="M 92 192
+             L 92 124
+             Q 92 92 128 92
+             Q 164 92 164 124
+             L 164 192
+             Z"
+          fill="#141822"/>
+
+    <!-- Inner glow line at the top of the arch -->
+    <path d="M 92 124 Q 92 92 128 92 Q 164 92 164 124"
+          fill="none"
+          stroke="#7C5BEF"
+          stroke-width="3"
+          stroke-linecap="round"/>
+
+    <!-- Threshold bar -->
+    <rect x="58" y="188" width="140" height="8" rx="4" fill="#FFFFFF" fill-opacity="0.85"/>
+  </g>
+
+  <!-- Wordmark dot accent -->
+  <circle cx="128" cy="212" r="4" fill="#FFFFFF" fill-opacity="0.9"/>
+</svg>

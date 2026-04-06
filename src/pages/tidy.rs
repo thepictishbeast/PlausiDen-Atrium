@@ -72,6 +72,20 @@ pub struct ScanInFlight {
     pub result: Option<Result<(Vec<FileEntry>, ScanReport), String>>,
 }
 
+pub fn expand_tilde(input: &str) -> String {
+    if let Some(stripped) = input.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return format!("{}/{}", home, stripped);
+    }
+    if input == "~"
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return home;
+    }
+    input.to_string()
+}
+
 pub struct ScanResult {
     pub root: PathBuf,
     pub entries: Vec<FileEntry>,
@@ -153,11 +167,23 @@ pub struct TidyContext<'a> {
 
 impl TidyState {
     pub fn start_scan(&mut self, ctx: &egui::Context) {
-        let path = PathBuf::from(self.scan_path.trim());
+        let raw = self.scan_path.trim().to_string();
+        let expanded = expand_tilde(&raw);
+        let path = match std::fs::canonicalize(&expanded) {
+            Ok(p) => p,
+            Err(_) => PathBuf::from(&expanded),
+        };
         if !path.exists() {
             self.status = format!("Path does not exist: {}", path.display());
             return;
         }
+        if !path.is_dir() {
+            self.status = format!("Not a directory: {}", path.display());
+            return;
+        }
+        // Echo the resolved path back into the input so the user sees
+        // exactly what will be scanned.
+        self.scan_path = path.to_string_lossy().into_owned();
         let options = self.scan_options.clone();
         let shared = Arc::new(Mutex::new(ScanInFlight {
             root: path.clone(),

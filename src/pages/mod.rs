@@ -2,16 +2,16 @@
 
 pub mod docs;
 pub mod home;
-pub mod purge;
 pub mod settings;
 pub mod tidy;
+pub mod tools;
 
 /// Top-level navigation pages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Home,
     Tidy,
-    Purge,
+    Tools,
     Docs,
     Settings,
 }
@@ -20,7 +20,7 @@ impl Page {
     pub const ALL: [Page; 5] = [
         Page::Home,
         Page::Tidy,
-        Page::Purge,
+        Page::Tools,
         Page::Docs,
         Page::Settings,
     ];
@@ -29,7 +29,7 @@ impl Page {
         match self {
             Page::Home => "Home",
             Page::Tidy => "Tidy",
-            Page::Purge => "Purge",
+            Page::Tools => "Tools",
             Page::Docs => "Docs",
             Page::Settings => "Settings",
         }
@@ -39,19 +39,19 @@ impl Page {
         match self {
             Page::Home => "⌂",
             Page::Tidy => "◎",
-            Page::Purge => "⚠",
+            Page::Tools => "⚙",
             Page::Docs => "?",
-            Page::Settings => "⚙",
+            Page::Settings => "◇",
         }
     }
 
     pub fn description(&self) -> &'static str {
         match self {
             Page::Home => "Dashboard and environment overview",
-            Page::Tidy => "Everyday cleanup — duplicates, old files, large files",
-            Page::Purge => "Antiforensic destruction — use sparingly",
+            Page::Tidy => "Cleanup — duplicates, old files, large files, caches, plan",
+            Page::Tools => "Forensic recovery tools, wipe presets, block devices",
             Page::Docs => "How to use Atrium safely",
-            Page::Settings => "Theme, protected paths, defaults",
+            Page::Settings => "Theme, protected paths, safety lock",
         }
     }
 }
