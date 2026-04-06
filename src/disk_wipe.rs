@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
@@ -72,11 +73,27 @@ impl DiskRange {
         }
         let meta = std::fs::metadata(&self.device)
             .map_err(|e| format!("stat {}: {}", self.device.display(), e))?;
-        if !meta.file_type().is_block_device() {
-            return Err(format!(
-                "{} is not a block device (safety refusal)",
-                self.device.display()
-            ));
+        #[cfg(unix)]
+        {
+            if !meta.file_type().is_block_device() {
+                return Err(format!(
+                    "{} is not a block device (safety refusal)",
+                    self.device.display()
+                ));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            // On macOS / Windows the Unix block-device check does
+            // not apply. Fall back to a minimal size check — if the
+            // target is a regular file we refuse it.
+            if meta.is_file() {
+                return Err(format!(
+                    "{} is a regular file, not a raw device (safety refusal)",
+                    self.device.display()
+                ));
+            }
+            let _ = meta;
         }
         if is_device_mounted(&self.device) {
             return Err(format!(
@@ -88,21 +105,64 @@ impl DiskRange {
     }
 }
 
-/// Parse `/proc/mounts` and return true if the given device path
-/// appears in any mount line. Also checks the canonical path (in
-/// case the caller passed a symlink like `/dev/disk/by-label/foo`).
+/// Return true if the given device path is currently mounted.
 ///
-/// BUG ASSUMPTION: /proc/mounts may be unreadable in weird sandboxes;
-/// the answer in that case is "unknown", which we treat as "possibly
-/// mounted" to stay on the safe side and refuse the wipe.
+/// BUG ASSUMPTION: the underlying check is platform-specific; on
+/// any platform where we cannot reliably determine the answer we
+/// fail closed (assume mounted) so the caller never accidentally
+/// wipes a live filesystem.
 pub fn is_device_mounted(device: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        is_device_mounted_linux(device)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        is_device_mounted_macos(device)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        // Windows and anything else: we don't have a reliable
+        // mount-check primitive, so fail closed.
+        let _ = device;
+        true
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_device_mounted_linux(device: &Path) -> bool {
     let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else {
-        return true; // fail closed: assume mounted
+        return true; // fail closed
     };
     let canonical = std::fs::canonicalize(device).ok();
     for line in mounts.lines() {
         let mut fields = line.split_whitespace();
         if let Some(dev) = fields.next() {
+            if dev == device.to_string_lossy() {
+                return true;
+            }
+            if let Some(canon) = &canonical
+                && dev == canon.to_string_lossy()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn is_device_mounted_macos(device: &Path) -> bool {
+    // macOS: shell out to `mount`. The output is lines like
+    // "/dev/disk2 on /Volumes/Data (apfs, local, journaled)"
+    // We match the first column against the device path.
+    let Ok(out) = std::process::Command::new("mount").output() else {
+        return true; // fail closed
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let canonical = std::fs::canonicalize(device).ok();
+    for line in text.lines() {
+        if let Some(dev) = line.split_whitespace().next() {
             if dev == device.to_string_lossy() {
                 return true;
             }
@@ -380,6 +440,23 @@ pub fn list_block_devices_all() -> Vec<DeviceInfo> {
 }
 
 fn list_block_devices_filtered(filter_dangerous: bool) -> Vec<DeviceInfo> {
+    #[cfg(target_os = "linux")]
+    {
+        list_block_devices_filtered_linux(filter_dangerous)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS and Windows would enumerate block devices via
+        // diskutil / GetLogicalDrives respectively. Left as a
+        // scaffold for a follow-up commit; the current UI refuses
+        // empty device lists gracefully.
+        let _ = filter_dangerous;
+        Vec::new()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn list_block_devices_filtered_linux(filter_dangerous: bool) -> Vec<DeviceInfo> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir("/sys/block") else { return out };
     let mounted = mounted_devices();
@@ -427,7 +504,9 @@ pub fn is_dangerous_device_name(name: &str) -> bool {
         || name.starts_with("fd") // legacy floppy
 }
 
-/// Snapshot of the first column of /proc/mounts.
+/// Snapshot of the first column of /proc/mounts. Linux-only helper
+/// consumed by `list_block_devices_filtered_linux`.
+#[cfg(target_os = "linux")]
 fn mounted_devices() -> HashSet<String> {
     let mut out = HashSet::new();
     let Ok(mounts) = std::fs::read_to_string("/proc/mounts") else { return out };
