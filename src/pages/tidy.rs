@@ -18,11 +18,12 @@ use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 use egui_extras::{Column, TableBuilder};
 use plausiden_tidy::action::{ActionKind, FsExecutor, PlanAction};
 use plausiden_tidy::age_analyzer::AgeAnalyzer;
+use plausiden_tidy::cleaners::{self, CleanerCategory, CleanerReport};
 use plausiden_tidy::dedup::{DedupReport, Deduplicator};
 use plausiden_tidy::importance::{Importance, ImportanceClassifier};
 use plausiden_tidy::plan::CleanupPlan;
 use plausiden_tidy::scanner::{FileEntry, ScanOptions, ScanReport, Scanner};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -33,15 +34,17 @@ pub enum TidyView {
     Duplicates,
     Old,
     Large,
+    Cleaners,
     Plan,
 }
 
 impl TidyView {
-    pub const ALL: [TidyView; 5] = [
+    pub const ALL: [TidyView; 6] = [
         TidyView::AllFiles,
         TidyView::Duplicates,
         TidyView::Old,
         TidyView::Large,
+        TidyView::Cleaners,
         TidyView::Plan,
     ];
 
@@ -51,6 +54,7 @@ impl TidyView {
             TidyView::Duplicates => "Duplicates",
             TidyView::Old => "Old files",
             TidyView::Large => "Large files",
+            TidyView::Cleaners => "Cleaners",
             TidyView::Plan => "Plan",
         }
     }
@@ -125,6 +129,11 @@ pub struct TidyState {
     pub confirmation_input: String,
     pub last_commit_status: Option<String>,
 
+    // Cleaners
+    pub cleaner_reports: HashMap<CleanerCategory, CleanerReport>,
+    pub cleaner_selection: HashSet<CleanerCategory>,
+    pub cleaners_scanned: bool,
+
     // Status
     pub status: String,
 }
@@ -154,6 +163,9 @@ impl Default for TidyState {
             default_action_kind: ActionKind::Review,
             confirmation_input: String::new(),
             last_commit_status: None,
+            cleaner_reports: HashMap::new(),
+            cleaner_selection: HashSet::new(),
+            cleaners_scanned: false,
             status: "Ready. Nothing is deleted until you approve and confirm.".into(),
         }
     }
@@ -287,6 +299,7 @@ impl TidyState {
                     .unwrap_or(false),
                 TidyView::AllFiles => true,
                 TidyView::Plan => false, // Plan uses its own list
+                TidyView::Cleaners => false, // Cleaners uses its own list
             })
             .filter(|e| {
                 if filter_lower.is_empty() {
@@ -399,6 +412,7 @@ pub fn show(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext, ctx: &egui::Co
         TidyView::Duplicates => dedup_view(ui, state, cx),
         TidyView::Old => old_view(ui, state, cx),
         TidyView::Large => large_view(ui, state, cx),
+        TidyView::Cleaners => cleaners_view(ui, state, cx),
         TidyView::Plan => plan_view(ui, state, cx),
     }
 
@@ -982,6 +996,130 @@ fn large_view(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext) {
         );
     });
     table_view(ui, state, cx, None);
+}
+
+fn cleaners_view(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext) {
+    ui.heading("Device cleaners");
+    ui.label(
+        RichText::new(
+            "BleachBit-style category scans for well-known caches, trash, package archives, browser data, and log rotations. Each scan is metadata-only and safe to re-run.",
+        )
+        .color(cx.palette.text_dim),
+    );
+    ui.add_space(8.0);
+
+    ui.horizontal(|ui| {
+        if ui.button("Scan all categories").clicked() {
+            let reports = cleaners::scan_all();
+            state.cleaner_reports.clear();
+            for report in reports {
+                state.cleaner_reports.insert(report.category, report);
+            }
+            state.cleaners_scanned = true;
+            state.status = format!(
+                "Scanned {} cleaner categories",
+                state.cleaner_reports.len()
+            );
+        }
+        if ui.button("Select all").clicked() {
+            for cat in CleanerCategory::ALL {
+                state.cleaner_selection.insert(*cat);
+            }
+        }
+        if ui.button("Deselect all").clicked() {
+            state.cleaner_selection.clear();
+        }
+        if ui.button("Add selected to plan").clicked() {
+            let mut paths = Vec::new();
+            let mut sizes = Vec::new();
+            for cat in &state.cleaner_selection {
+                if let Some(report) = state.cleaner_reports.get(cat) {
+                    for entry in &report.entries {
+                        paths.push(entry.path.clone());
+                        sizes.push(entry.size);
+                    }
+                }
+            }
+            let added = state.add_paths_to_plan(
+                cx.classifier,
+                &paths,
+                &sizes,
+                state.default_action_kind,
+            );
+            state.status = format!(
+                "Added {} file(s) from {} categor(y|ies) to plan",
+                added,
+                state.cleaner_selection.len()
+            );
+        }
+    });
+
+    ui.add_space(6.0);
+    ui.separator();
+
+    if !state.cleaners_scanned {
+        ui.label(
+            RichText::new("Click 'Scan all categories' to populate the list.")
+                .color(cx.palette.text_dim),
+        );
+        return;
+    }
+
+    ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+        let mut total_bytes: u64 = 0;
+        let mut total_selected_bytes: u64 = 0;
+        for cat in CleanerCategory::ALL {
+            let report = state.cleaner_reports.get(cat);
+            let bytes = report.map(|r| r.total_bytes).unwrap_or(0);
+            let count = report.map(|r| r.files_found).unwrap_or(0);
+            total_bytes += bytes;
+            let mut selected = state.cleaner_selection.contains(cat);
+            ui.horizontal(|ui| {
+                if ui.checkbox(&mut selected, "").changed() {
+                    if selected {
+                        state.cleaner_selection.insert(*cat);
+                    } else {
+                        state.cleaner_selection.remove(cat);
+                    }
+                }
+                ui.label(
+                    RichText::new(cat.title())
+                        .color(cx.palette.text)
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new(format!("{} files · {}", count, format_bytes(bytes)))
+                        .color(cx.palette.accent)
+                        .small(),
+                );
+            });
+            ui.label(
+                RichText::new(cat.description())
+                    .color(cx.palette.text_dim)
+                    .small(),
+            );
+            if let Some(note) = cat.destructive_note() {
+                ui.label(
+                    RichText::new(format!("⚠  {}", note))
+                        .color(cx.palette.warn)
+                        .small(),
+                );
+            }
+            if selected {
+                total_selected_bytes += bytes;
+            }
+            ui.add_space(4.0);
+        }
+        ui.separator();
+        ui.label(
+            RichText::new(format!(
+                "Total: {} across all categories · {} selected",
+                format_bytes(total_bytes),
+                format_bytes(total_selected_bytes)
+            ))
+            .color(cx.palette.text),
+        );
+    });
 }
 
 fn plan_view(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext) {
