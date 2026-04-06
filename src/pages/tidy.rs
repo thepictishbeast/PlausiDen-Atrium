@@ -76,18 +76,32 @@ pub struct ScanInFlight {
     pub result: Option<Result<(Vec<FileEntry>, ScanReport), String>>,
 }
 
-pub fn expand_tilde(input: &str) -> String {
+/// Expand a leading `~` or `~/` in `input` to `home`.
+///
+/// Pure function — takes the home directory as a parameter so it is
+/// thread-safe to test without mutating process env.
+///
+/// BUG ASSUMPTION: input may contain garbage, null bytes, tilde in
+/// unexpected positions, or a username-style prefix like `~alice`
+/// that we deliberately do NOT expand.
+pub fn expand_tilde_with(input: &str, home: Option<&str>) -> String {
     if let Some(stripped) = input.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
+        && let Some(h) = home
     {
-        return format!("{}/{}", home, stripped);
+        return format!("{}/{}", h, stripped);
     }
     if input == "~"
-        && let Ok(home) = std::env::var("HOME")
+        && let Some(h) = home
     {
-        return home;
+        return h.to_string();
     }
     input.to_string()
+}
+
+/// Convenience wrapper that reads `$HOME` from the process environment.
+pub fn expand_tilde(input: &str) -> String {
+    let home = std::env::var("HOME").ok();
+    expand_tilde_with(input, home.as_deref())
 }
 
 pub struct ScanResult {
@@ -1278,5 +1292,203 @@ fn format_mtime(dt: DateTime<Utc>) -> String {
         dt.format("%b %d").to_string()
     } else {
         dt.format("%Y-%m-%d").to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use plausiden_tidy::scanner::ScanReport;
+
+    // ---- expand_tilde ---------------------------------------------------
+
+    const FAKE_HOME: &str = "/home/testhome";
+
+    #[test]
+    fn test_expand_tilde_alone() {
+        assert_eq!(expand_tilde_with("~", Some(FAKE_HOME)), "/home/testhome");
+    }
+
+    #[test]
+    fn test_expand_tilde_slash() {
+        assert_eq!(
+            expand_tilde_with("~/Downloads", Some(FAKE_HOME)),
+            "/home/testhome/Downloads"
+        );
+    }
+
+    #[test]
+    fn test_expand_tilde_nested() {
+        assert_eq!(
+            expand_tilde_with("~/a/b/c.txt", Some(FAKE_HOME)),
+            "/home/testhome/a/b/c.txt"
+        );
+    }
+
+    #[test]
+    fn test_expand_tilde_absolute_passthrough() {
+        assert_eq!(expand_tilde_with("/etc/hosts", Some(FAKE_HOME)), "/etc/hosts");
+    }
+
+    #[test]
+    fn test_expand_tilde_relative_passthrough() {
+        assert_eq!(expand_tilde_with("Documents", Some(FAKE_HOME)), "Documents");
+    }
+
+    #[test]
+    fn test_expand_tilde_empty_passthrough() {
+        assert_eq!(expand_tilde_with("", Some(FAKE_HOME)), "");
+    }
+
+    #[test]
+    fn test_expand_tilde_username_style_passthrough() {
+        // We deliberately do NOT handle ~username; it passes through
+        // unchanged rather than guessing.
+        assert_eq!(
+            expand_tilde_with("~alice/docs", Some(FAKE_HOME)),
+            "~alice/docs"
+        );
+    }
+
+    #[test]
+    fn test_expand_tilde_without_home_passthrough() {
+        // If $HOME is unset, tilde paths pass through unchanged.
+        assert_eq!(expand_tilde_with("~/foo", None), "~/foo");
+        assert_eq!(expand_tilde_with("~", None), "~");
+    }
+
+    #[test]
+    fn test_expand_tilde_mid_string_not_expanded() {
+        assert_eq!(
+            expand_tilde_with("/prefix/~/suffix", Some(FAKE_HOME)),
+            "/prefix/~/suffix"
+        );
+    }
+
+    // ---- filtered_rows --------------------------------------------------
+
+    fn fake_entry(name: &str, size: u64) -> FileEntry {
+        FileEntry {
+            path: PathBuf::from(format!("/tmp/scan/{}", name)),
+            size,
+            modified: Utc::now(),
+            accessed: Utc::now(),
+            is_symlink: false,
+            is_dir: false,
+        }
+    }
+
+    fn state_with_entries(entries: Vec<FileEntry>) -> TidyState {
+        let mut state = TidyState::default();
+        state.last_scan = Some(ScanResult {
+            root: PathBuf::from("/tmp/scan"),
+            entries,
+            report: ScanReport::default(),
+        });
+        state
+    }
+
+    #[test]
+    fn test_filtered_rows_no_scan_returns_empty() {
+        let state = TidyState::default();
+        let classifier = ImportanceClassifier::new();
+        assert!(state.filtered_rows(&classifier).is_empty());
+    }
+
+    #[test]
+    fn test_filtered_rows_sorted_by_size_desc_by_default() {
+        let state = state_with_entries(vec![
+            fake_entry("small", 100),
+            fake_entry("big", 10_000),
+            fake_entry("mid", 1_000),
+        ]);
+        let classifier = ImportanceClassifier::new();
+        let rows = state.filtered_rows(&classifier);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].size, 10_000);
+        assert_eq!(rows[1].size, 1_000);
+        assert_eq!(rows[2].size, 100);
+    }
+
+    #[test]
+    fn test_filtered_rows_plan_view_is_empty() {
+        let mut state = state_with_entries(vec![fake_entry("x", 1)]);
+        state.view = TidyView::Plan;
+        let classifier = ImportanceClassifier::new();
+        assert!(state.filtered_rows(&classifier).is_empty());
+    }
+
+    #[test]
+    fn test_filtered_rows_cleaners_view_is_empty() {
+        let mut state = state_with_entries(vec![fake_entry("x", 1)]);
+        state.view = TidyView::Cleaners;
+        let classifier = ImportanceClassifier::new();
+        assert!(state.filtered_rows(&classifier).is_empty());
+    }
+
+    #[test]
+    fn test_filtered_rows_text_filter_case_insensitive() {
+        let mut state = state_with_entries(vec![
+            fake_entry("DOWNLOAD.iso", 1000),
+            fake_entry("photo.jpg", 2000),
+        ]);
+        state.filter_text = "iso".into();
+        let classifier = ImportanceClassifier::new();
+        let rows = state.filtered_rows(&classifier);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].path.to_string_lossy().contains("DOWNLOAD"));
+    }
+
+    #[test]
+    fn test_filtered_rows_large_view_respects_min_size() {
+        let mut state = state_with_entries(vec![
+            fake_entry("tiny", 100),
+            fake_entry("medium", 2000),
+            fake_entry("huge", 20_000),
+        ]);
+        state.view = TidyView::Large;
+        state.min_size_filter_bytes = 1_500;
+        let classifier = ImportanceClassifier::new();
+        let rows = state.filtered_rows(&classifier);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.size >= 1_500));
+    }
+
+    #[test]
+    fn test_filtered_rows_sort_by_name() {
+        let mut state = state_with_entries(vec![
+            fake_entry("zebra", 1),
+            fake_entry("alpha", 1),
+            fake_entry("mango", 1),
+        ]);
+        state.sort_by = SortBy::Name;
+        state.sort_desc = false;
+        let classifier = ImportanceClassifier::new();
+        let rows = state.filtered_rows(&classifier);
+        assert_eq!(rows[0].path.file_name().unwrap(), "alpha");
+        assert_eq!(rows[1].path.file_name().unwrap(), "mango");
+        assert_eq!(rows[2].path.file_name().unwrap(), "zebra");
+    }
+
+    #[test]
+    fn test_filtered_rows_directory_entries_excluded() {
+        let mut dir_entry = fake_entry("subdir", 0);
+        dir_entry.is_dir = true;
+        let state = state_with_entries(vec![dir_entry, fake_entry("file.txt", 10)]);
+        let classifier = ImportanceClassifier::new();
+        let rows = state.filtered_rows(&classifier);
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].is_dir);
+    }
+
+    #[test]
+    fn test_tidy_state_default_is_safe() {
+        let state = TidyState::default();
+        assert!(state.last_scan.is_none());
+        assert!(state.scan_in_flight.is_none());
+        assert!(state.plan.is_empty());
+        assert_eq!(state.default_action_kind, ActionKind::Review);
+        assert!(state.selected.is_empty());
+        assert!(!state.cleaners_scanned);
     }
 }

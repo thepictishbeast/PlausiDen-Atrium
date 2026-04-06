@@ -13,6 +13,7 @@ mod pages;
 mod theme;
 mod widgets;
 mod wipe_config;
+mod wipe_runner;
 
 use app::AtriumApp;
 
