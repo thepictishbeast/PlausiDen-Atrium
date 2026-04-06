@@ -475,17 +475,36 @@ fn header(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext, ctx: &egui::Cont
     });
 
     if let Some(scan) = &state.last_scan {
-        ui.label(
-            RichText::new(format!(
-                "Scanned {} files · {} · {} errors · root: {}",
-                scan.report.files_scanned,
-                format_bytes(scan.report.total_bytes),
-                scan.report.io_errors,
-                scan.root.display()
-            ))
-            .color(cx.palette.text_dim)
-            .small(),
-        );
+        ui.add_space(4.0);
+        egui::Frame::none()
+            .fill(cx.palette.bg_elevated)
+            .stroke(egui::Stroke::new(1.0, cx.palette.border))
+            .rounding(egui::Rounding::same(8.0))
+            .inner_margin(egui::Margin::symmetric(14.0, 8.0))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Scanned:")
+                            .color(cx.palette.text_subtle)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(scan.root.display().to_string())
+                            .color(cx.palette.accent)
+                            .monospace()
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "· {} files · {} · {} errors",
+                            format_count(scan.report.files_scanned),
+                            format_bytes(scan.report.total_bytes),
+                            scan.report.io_errors
+                        ))
+                        .color(cx.palette.text_dim),
+                    );
+                });
+            });
     }
 }
 
