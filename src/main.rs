@@ -17,21 +17,28 @@ mod wipe_config;
 use app::AtriumApp;
 
 fn env_precheck() {
-    if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!();
-        eprintln!("┌─ Atrium startup warning ────────────────────────────────");
-        eprintln!("│ Neither DISPLAY nor WAYLAND_DISPLAY is set.");
-        eprintln!("│ If you are running under sudo, try:");
-        eprintln!("│");
-        eprintln!("│   sudo -E atrium");
-        eprintln!("│");
-        eprintln!("│ Or grant root one-time X access and relaunch:");
-        eprintln!("│");
-        eprintln!("│   xhost +si:localuser:root");
-        eprintln!("│   sudo atrium");
-        eprintln!("└────────────────────────────────────────────────────────");
-        eprintln!();
+    let display_ok = std::env::var("DISPLAY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let wayland_ok = std::env::var("WAYLAND_DISPLAY")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if display_ok || wayland_ok {
+        return;
     }
+    eprintln!();
+    eprintln!("┌─ Atrium startup warning ────────────────────────────────");
+    eprintln!("│ Neither DISPLAY nor WAYLAND_DISPLAY is set to a value.");
+    eprintln!("│ If you are running under sudo, try:");
+    eprintln!("│");
+    eprintln!("│   sudo -E atrium");
+    eprintln!("│");
+    eprintln!("│ Or grant root one-time X access and relaunch:");
+    eprintln!("│");
+    eprintln!("│   xhost +si:localuser:root");
+    eprintln!("│   sudo atrium");
+    eprintln!("└────────────────────────────────────────────────────────");
+    eprintln!();
 }
 
 fn load_icon() -> Option<egui::IconData> {
