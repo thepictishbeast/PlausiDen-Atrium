@@ -16,6 +16,8 @@ use crate::widgets::{duration_input, importance_badge, size_bar};
 use chrono::{DateTime, Utc};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 use egui_extras::{Column, TableBuilder};
+use crate::wipe_config::{WipeConfig, WipePreset};
+use crate::wipe_runner;
 use plausiden_tidy::action::{ActionKind, FsExecutor, PlanAction};
 use plausiden_tidy::age_analyzer::AgeAnalyzer;
 use plausiden_tidy::cleaners::{self, CleanerCategory, CleanerReport};
@@ -142,6 +144,11 @@ pub struct TidyState {
     pub default_action_kind: ActionKind,
     pub confirmation_input: String,
     pub last_commit_status: Option<String>,
+    /// Per-plan-item wipe configuration for SecurePurge actions,
+    /// keyed by the action's absolute path. Items without an entry
+    /// fall back to the default preset.
+    pub wipe_configs: HashMap<PathBuf, WipeConfig>,
+    pub default_wipe_preset: WipePreset,
 
     // Cleaners
     pub cleaner_reports: HashMap<CleanerCategory, CleanerReport>,
@@ -177,6 +184,8 @@ impl Default for TidyState {
             default_action_kind: ActionKind::Review,
             confirmation_input: String::new(),
             last_commit_status: None,
+            wipe_configs: HashMap::new(),
+            default_wipe_preset: WipePreset::CryptoShred,
             cleaner_reports: HashMap::new(),
             cleaner_selection: HashSet::new(),
             cleaners_scanned: false,
@@ -377,26 +386,125 @@ impl TidyState {
         added
     }
 
+    /// Commit the current plan.
+    ///
+    /// BUG ASSUMPTION: callers may pass a stale classifier that no
+    /// longer reflects user settings; the plan may have been mutated
+    /// since the confirmation digest was shown; the filesystem may
+    /// have changed under us; an action may now point at a path that
+    /// was not the path the classifier originally checked. All of
+    /// these must not result in a file being touched when the user
+    /// did not intend it.
+    ///
+    /// SECURITY: `allow_live` is the ONLY path to real destructive
+    /// writes. When false (default), every approved SecurePurge goes
+    /// through `wipe_runner::execute_wipe(…, dry_run=true)` and every
+    /// tidy-side action goes through `FsExecutor::dry()`. When true,
+    /// SecurePurge items actually execute against their WipeConfig.
+    /// The caller is responsible for gating `allow_live` behind the
+    /// user's Safety-Lock toggle in Settings.
     fn commit_plan(&mut self, classifier: &ImportanceClassifier, allow_live: bool) {
         let confirmation = self.confirmation_input.trim().to_string();
-        let mut exec = FsExecutor::dry();
-        // Even if allow_live is true, we keep FsExecutor::dry() for
-        // now: real deletion will be enabled in a subsequent release
-        // after end-to-end UI review. This is intentional.
-        let _ = allow_live;
-        match self.plan.commit(&mut exec, classifier, &confirmation) {
-            Ok(results) => {
-                let ok = results.iter().filter(|r| r.success).count();
-                self.last_commit_status = Some(format!(
-                    "DRY-RUN: {}/{} actions would succeed",
-                    ok,
-                    results.len()
-                ));
+
+        // The plan-level confirmation digest is the primary gate.
+        let expected = self.plan.confirmation_digest();
+        if confirmation != expected {
+            self.last_commit_status = Some(format!(
+                "Commit refused: confirmation token mismatch (expected {}, got {})",
+                expected, confirmation
+            ));
+            return;
+        }
+        if self.plan.approved_count() == 0 {
+            self.last_commit_status = Some("Commit refused: no approved items".into());
+            return;
+        }
+
+        let mut wipe_ok = 0usize;
+        let mut wipe_fail = 0usize;
+        let mut tidy_ok = 0usize;
+        let mut tidy_fail = 0usize;
+        let mut lines: Vec<String> = Vec::new();
+
+        for action in &self.plan.actions {
+            if !action.approved {
+                continue;
             }
-            Err(e) => {
-                self.last_commit_status = Some(format!("Commit refused: {}", e));
+            // Re-run the classifier at commit time — a user may have
+            // added a protected path since the plan was assembled.
+            if !action.is_safe_to_execute(classifier) {
+                tidy_fail += 1;
+                lines.push(format!(
+                    "REFUSED (safety): {}",
+                    action.path.display()
+                ));
+                continue;
+            }
+
+            match action.kind {
+                ActionKind::SecurePurge => {
+                    let config = self
+                        .wipe_configs
+                        .get(&action.path)
+                        .cloned()
+                        .unwrap_or_else(|| WipeConfig::preset(self.default_wipe_preset));
+                    let result =
+                        wipe_runner::execute_wipe(&action.path, &config, !allow_live);
+                    if result.success {
+                        wipe_ok += 1;
+                        lines.push(format!(
+                            "{} SecurePurge ({} pass{}): {}",
+                            if allow_live { "LIVE" } else { "DRY" },
+                            result.passes_run,
+                            if result.passes_run == 1 { "" } else { "es" },
+                            action.path.display()
+                        ));
+                    } else {
+                        wipe_fail += 1;
+                        lines.push(format!(
+                            "FAIL SecurePurge: {} — {}",
+                            action.path.display(),
+                            result.errors.join("; ")
+                        ));
+                    }
+                }
+                _ => {
+                    // Tidy-side actions (Review, MoveToTrash, SimpleDelete)
+                    // still go through the dry executor until we have a
+                    // separate per-item confirmation flow.
+                    let mut exec = if allow_live {
+                        FsExecutor::real()
+                    } else {
+                        FsExecutor::dry()
+                    };
+                    use plausiden_tidy::action::ActionExecutor;
+                    match exec.execute(action) {
+                        Ok(r) if r.success => {
+                            tidy_ok += 1;
+                            lines.push(format!("{} {}: {}", if allow_live { "LIVE" } else { "DRY" }, action.kind.description(), action.path.display()));
+                        }
+                        Ok(r) => {
+                            tidy_fail += 1;
+                            lines.push(format!("FAIL {}: {}", action.kind.description(), r.message));
+                        }
+                        Err(e) => {
+                            tidy_fail += 1;
+                            lines.push(format!("ERR {}: {}", action.kind.description(), e));
+                        }
+                    }
+                }
             }
         }
+
+        let summary = format!(
+            "{}: {} wipe ok · {} wipe fail · {} tidy ok · {} tidy fail",
+            if allow_live { "LIVE COMMIT" } else { "DRY-RUN" },
+            wipe_ok,
+            wipe_fail,
+            tidy_ok,
+            tidy_fail
+        );
+        self.last_commit_status = Some(format!("{}\n{}", summary, lines.join("\n")));
     }
 }
 
@@ -1181,15 +1289,39 @@ fn plan_view(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext) {
             state.plan = CleanupPlan::new("Atrium session");
             state.confirmation_input.clear();
             state.last_commit_status = None;
+            state.wipe_configs.clear();
         }
     });
 
     ui.add_space(6.0);
 
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Default wipe preset for new SecurePurge items:")
+                .color(cx.palette.text_dim),
+        );
+        egui::ComboBox::from_id_salt("default-wipe-preset")
+            .selected_text(state.default_wipe_preset.label())
+            .show_ui(ui, |ui| {
+                for preset in WipePreset::ALL {
+                    ui.selectable_value(
+                        &mut state.default_wipe_preset,
+                        *preset,
+                        preset.label(),
+                    );
+                }
+            });
+    });
+
+    ui.add_space(6.0);
+
+    let default_preset = state.default_wipe_preset;
+
     ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
         let mut to_remove: Option<usize> = None;
         let mut approve_changes: Vec<(usize, bool)> = Vec::new();
         let mut kind_changes: Vec<(usize, ActionKind)> = Vec::new();
+        let mut wipe_preset_changes: Vec<(PathBuf, WipePreset)> = Vec::new();
         for (i, action) in state.plan.actions.iter().enumerate() {
             ui.horizontal(|ui| {
                 let mut approved = action.approved;
@@ -1223,6 +1355,54 @@ fn plan_view(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext) {
                     to_remove = Some(i);
                 }
             });
+            // Inline wipe preset selector for SecurePurge items.
+            if action.kind == ActionKind::SecurePurge {
+                ui.indent(format!("wipe-{}", i), |ui| {
+                    let current_preset = state
+                        .wipe_configs
+                        .get(&action.path)
+                        .map(|_| WipePreset::Custom)
+                        .unwrap_or(default_preset);
+                    let mut chosen_preset = current_preset;
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("wipe recipe:")
+                                .color(cx.palette.text_subtle)
+                                .small(),
+                        );
+                        egui::ComboBox::from_id_salt(format!("wipe-preset-{}", i))
+                            .selected_text(chosen_preset.label())
+                            .show_ui(ui, |ui| {
+                                for preset in WipePreset::ALL {
+                                    if ui
+                                        .selectable_value(
+                                            &mut chosen_preset,
+                                            *preset,
+                                            preset.label(),
+                                        )
+                                        .changed()
+                                    {
+                                        wipe_preset_changes
+                                            .push((action.path.clone(), *preset));
+                                    }
+                                }
+                            });
+                        let effective = state
+                            .wipe_configs
+                            .get(&action.path)
+                            .cloned()
+                            .unwrap_or_else(|| WipeConfig::preset(default_preset));
+                        ui.label(
+                            RichText::new(format!(
+                                "({} passes)",
+                                effective.total_passes()
+                            ))
+                            .color(cx.palette.accent)
+                            .small(),
+                        );
+                    });
+                });
+            }
         }
         for (i, approved) in approve_changes {
             if approved {
@@ -1236,8 +1416,21 @@ fn plan_view(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext) {
                 a.kind = k;
             }
         }
+        for (path, preset) in wipe_preset_changes {
+            state
+                .wipe_configs
+                .insert(path, WipeConfig::preset(preset));
+        }
         if let Some(i) = to_remove {
+            let path = state
+                .plan
+                .actions
+                .get(i)
+                .map(|a| a.path.clone());
             state.plan.remove_at(i);
+            if let Some(p) = path {
+                state.wipe_configs.remove(&p);
+            }
         }
     });
 
@@ -1272,7 +1465,22 @@ fn plan_view(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext) {
         }
     });
     if let Some(msg) = &state.last_commit_status {
-        ui.label(RichText::new(msg).color(cx.palette.text));
+        ui.add_space(6.0);
+        egui::Frame::none()
+            .fill(cx.palette.bg_elevated)
+            .stroke(egui::Stroke::new(1.0, cx.palette.border))
+            .rounding(egui::Rounding::same(6.0))
+            .inner_margin(egui::Margin::same(10.0))
+            .show(ui, |ui| {
+                ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    ui.label(
+                        RichText::new(msg)
+                            .color(cx.palette.text)
+                            .monospace()
+                            .small(),
+                    );
+                });
+            });
     }
 }
 
@@ -1490,5 +1698,157 @@ mod tests {
         assert_eq!(state.default_action_kind, ActionKind::Review);
         assert!(state.selected.is_empty());
         assert!(!state.cleaners_scanned);
+    }
+
+    // ---- commit_plan routing --------------------------------------------
+
+    use plausiden_tidy::importance::{Reason, Verdict};
+    use std::io::Write as _;
+
+    fn synth_temp_file(contents: &[u8]) -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "atrium-commit-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let mut f = std::fs::File::create(&p).unwrap();
+        f.write_all(contents).unwrap();
+        p
+    }
+
+    #[test]
+    fn test_commit_plan_dry_run_does_not_touch_file() {
+        let path = synth_temp_file(b"still-here-after-dry-run");
+        let mut state = TidyState::default();
+        let verdict = Verdict {
+            path: path.clone(),
+            importance: Importance::Low,
+            reason: Reason::None,
+        };
+        let mut action = PlanAction::new(
+            path.clone(),
+            24,
+            ActionKind::SecurePurge,
+            verdict,
+        );
+        action.approved = true;
+        state.plan.add(action);
+        let digest = state.plan.confirmation_digest();
+        state.confirmation_input = digest;
+        let classifier = ImportanceClassifier::new();
+        state.commit_plan(&classifier, false);
+        assert!(path.exists(), "dry run must not touch the file");
+        let contents = std::fs::read(&path).unwrap();
+        assert_eq!(contents, b"still-here-after-dry-run");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_commit_plan_live_secure_purge_actually_wipes() {
+        let path = synth_temp_file(b"about-to-be-shredded");
+        let mut state = TidyState::default();
+        let verdict = Verdict {
+            path: path.clone(),
+            importance: Importance::Low,
+            reason: Reason::None,
+        };
+        let mut action = PlanAction::new(
+            path.clone(),
+            20,
+            ActionKind::SecurePurge,
+            verdict,
+        );
+        action.approved = true;
+        state.plan.add(action);
+        let digest = state.plan.confirmation_digest();
+        state.confirmation_input = digest;
+        let classifier = ImportanceClassifier::new();
+        state.commit_plan(&classifier, true);
+        assert!(!path.exists(), "live wipe must remove the file");
+    }
+
+    #[test]
+    fn test_commit_plan_refuses_wrong_confirmation() {
+        let mut state = TidyState::default();
+        let verdict = Verdict {
+            path: PathBuf::from("/tmp/nonexistent-x"),
+            importance: Importance::Low,
+            reason: Reason::None,
+        };
+        let mut action = PlanAction::new(
+            PathBuf::from("/tmp/nonexistent-x"),
+            1,
+            ActionKind::Review,
+            verdict,
+        );
+        action.approved = true;
+        state.plan.add(action);
+        state.confirmation_input = "wrongtoken".into();
+        let classifier = ImportanceClassifier::new();
+        state.commit_plan(&classifier, true);
+        assert!(state
+            .last_commit_status
+            .as_ref()
+            .map(|s| s.contains("refused"))
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn test_commit_plan_with_no_approvals_fails() {
+        let mut state = TidyState::default();
+        let verdict = Verdict {
+            path: PathBuf::from("/tmp/nonexistent-y"),
+            importance: Importance::Low,
+            reason: Reason::None,
+        };
+        let action = PlanAction::new(
+            PathBuf::from("/tmp/nonexistent-y"),
+            1,
+            ActionKind::Review,
+            verdict,
+        );
+        state.plan.add(action);
+        let digest = state.plan.confirmation_digest();
+        state.confirmation_input = digest;
+        let classifier = ImportanceClassifier::new();
+        state.commit_plan(&classifier, false);
+        assert!(state
+            .last_commit_status
+            .as_ref()
+            .map(|s| s.contains("no approved"))
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn test_commit_plan_honours_per_item_wipe_preset() {
+        let path = synth_temp_file(&vec![0u8; 1024]);
+        let mut state = TidyState::default();
+        state
+            .wipe_configs
+            .insert(path.clone(), WipeConfig::preset(WipePreset::DoD3Pass));
+        let verdict = Verdict {
+            path: path.clone(),
+            importance: Importance::Low,
+            reason: Reason::None,
+        };
+        let mut action = PlanAction::new(
+            path.clone(),
+            1024,
+            ActionKind::SecurePurge,
+            verdict,
+        );
+        action.approved = true;
+        state.plan.add(action);
+        let digest = state.plan.confirmation_digest();
+        state.confirmation_input = digest;
+        let classifier = ImportanceClassifier::new();
+        state.commit_plan(&classifier, true);
+        assert!(!path.exists(), "file should be wiped");
+        let status = state.last_commit_status.unwrap_or_default();
+        assert!(
+            status.contains("3 pass"),
+            "expected DoD-3 in status, got: {}",
+            status
+        );
     }
 }
