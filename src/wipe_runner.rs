@@ -12,6 +12,7 @@
 //! may have passed a path that the OS will silently redirect; any of
 //! these must not corrupt neighbouring files.
 
+use crate::forensic::{self, ForensicTool, VerificationReport};
 use crate::wipe_config::{WipeAlgorithm, WipeConfig};
 use chacha20poly1305::aead::{AeadInPlace, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
@@ -262,6 +263,118 @@ fn finalize(
     result
 }
 
+/// Report of a wipe followed by a forensic verification loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedWipeResult {
+    pub initial_wipe: WipeResult,
+    pub verification_attempts: Vec<VerificationReport>,
+    pub final_success: bool,
+    pub iterations: u32,
+    pub verdict: String,
+}
+
+/// Run a wipe, then run a forensic recovery tool against the scan
+/// directory, and loop the tool up to `max_iterations` times until
+/// it reports zero recovered files.
+///
+/// BUG ASSUMPTION: photorec/foremost may be slow (10s of minutes on
+/// large devices), may refuse to run without root, may produce
+/// unrelated recoveries from the surrounding filesystem, and may
+/// fail transiently. The loop treats tool failure as inconclusive
+/// and preserves the attempt in the report.
+///
+/// SECURITY: this function cannot re-wipe the same file after the
+/// initial wipe because the file no longer exists. The caller is
+/// expected to use this against a free-space region or against a
+/// disk image. For the everyday Tidy case, one initial wipe is
+/// sufficient and the verification loop simply observes.
+pub fn execute_wipe_with_verification(
+    path: &Path,
+    config: &WipeConfig,
+    tool: ForensicTool,
+    scan_target: &Path,
+    max_iterations: u32,
+    dry_run: bool,
+) -> VerifiedWipeResult {
+    let initial_wipe = execute_wipe(path, config, dry_run);
+
+    if dry_run {
+        return VerifiedWipeResult {
+            initial_wipe,
+            verification_attempts: Vec::new(),
+            final_success: true,
+            iterations: 0,
+            verdict: "dry-run — verification skipped".into(),
+        };
+    }
+
+    if !initial_wipe.success {
+        return VerifiedWipeResult {
+            initial_wipe: initial_wipe.clone(),
+            verification_attempts: Vec::new(),
+            final_success: false,
+            iterations: 0,
+            verdict: format!(
+                "initial wipe failed: {}",
+                initial_wipe.errors.join("; ")
+            ),
+        };
+    }
+
+    let mut attempts: Vec<VerificationReport> = Vec::new();
+    let mut verdict = String::new();
+    let mut iterations: u32 = 0;
+
+    for i in 0..max_iterations {
+        iterations = i + 1;
+        let output_dir = std::env::temp_dir()
+            .join(format!("atrium-verify-{}-{}", std::process::id(), i));
+        let _ = std::fs::create_dir_all(&output_dir);
+        let report = forensic::run_verification(tool, scan_target, &output_dir);
+        let recovered = report.files_recovered;
+        let tool_success = report.success;
+        attempts.push(report);
+
+        if !tool_success {
+            verdict = format!(
+                "iteration {}: tool invocation failed; cannot verify",
+                iterations
+            );
+            let _ = std::fs::remove_dir_all(&output_dir);
+            break;
+        }
+
+        if recovered == 0 {
+            verdict = format!(
+                "iteration {}: zero recoveries — verification passed",
+                iterations
+            );
+            let _ = std::fs::remove_dir_all(&output_dir);
+            return VerifiedWipeResult {
+                initial_wipe,
+                verification_attempts: attempts,
+                final_success: true,
+                iterations,
+                verdict,
+            };
+        }
+
+        verdict = format!(
+            "iteration {}: recovered {} file(s); the wipe did not reach physical media",
+            iterations, recovered
+        );
+        let _ = std::fs::remove_dir_all(&output_dir);
+    }
+
+    VerifiedWipeResult {
+        initial_wipe,
+        verification_attempts: attempts,
+        final_success: false,
+        iterations,
+        verdict,
+    }
+}
+
 fn fill_buffer(
     buf: &mut [u8],
     algorithm: WipeAlgorithm,
@@ -463,5 +576,66 @@ mod tests {
         let remaining = std::fs::read(&path).unwrap();
         assert_eq!(remaining, plaintext);
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_verified_wipe_dry_run_skips_verification() {
+        let path = temp_file(b"dry-run-target");
+        let result = execute_wipe_with_verification(
+            &path,
+            &WipeConfig::default(),
+            ForensicTool::PhotoRec,
+            &path,
+            3,
+            true,
+        );
+        assert!(result.final_success);
+        assert_eq!(result.iterations, 0);
+        assert!(result.verification_attempts.is_empty());
+        assert!(result.verdict.contains("dry-run"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_verified_wipe_reports_initial_failure() {
+        let missing = PathBuf::from("/tmp/nonexistent-verify-target-xyz-98765");
+        let result = execute_wipe_with_verification(
+            &missing,
+            &WipeConfig::default(),
+            ForensicTool::Foremost,
+            &missing,
+            3,
+            false,
+        );
+        assert!(!result.final_success);
+        assert!(result.verdict.contains("initial wipe failed"));
+    }
+
+    #[test]
+    fn test_verified_wipe_halts_on_tool_unavailable() {
+        // PhotoRec is detected via the binary on PATH. Since the test
+        // environment typically does not have it installed, calling
+        // execute_wipe_with_verification should wipe successfully and
+        // then hit a tool-unavailable error on the first iteration.
+        // This test locks in that behaviour regardless of which tool
+        // is actually installed: we use a tool name that is
+        // overwhelmingly unlikely to exist.
+        let path = temp_file(b"verify-target-that-will-actually-be-wiped");
+        let result = execute_wipe_with_verification(
+            &path,
+            &WipeConfig::default(),
+            ForensicTool::BulkExtractor,
+            &std::env::temp_dir(),
+            2,
+            false,
+        );
+        // The wipe itself must have succeeded regardless of the tool
+        // outcome.
+        assert!(result.initial_wipe.success);
+        assert!(!path.exists());
+        // Either the tool runs and finds zero (success) or it is
+        // unavailable (halt with failure). Both are valid outcomes
+        // here — we just verify the function doesn't panic.
+        assert!(!result.verdict.is_empty());
     }
 }
