@@ -24,9 +24,12 @@ use plausiden_tidy::cleaners::{self, CleanerCategory, CleanerReport};
 use plausiden_tidy::dedup::{DedupReport, Deduplicator};
 use plausiden_tidy::importance::{Importance, ImportanceClassifier};
 use plausiden_tidy::plan::CleanupPlan;
-use plausiden_tidy::scanner::{FileEntry, ScanOptions, ScanReport, Scanner};
+use plausiden_tidy::scanner::{
+    FileEntry, ScanOptions, ScanProgress, ScanReport, Scanner,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 /// Sub-view inside the Tidy page.
@@ -76,6 +79,7 @@ pub enum SortBy {
 pub struct ScanInFlight {
     pub root: PathBuf,
     pub result: Option<Result<(Vec<FileEntry>, ScanReport), String>>,
+    pub progress: Arc<ScanProgress>,
 }
 
 /// Expand a leading `~` or `~/` in `input` to `home`.
@@ -220,11 +224,14 @@ impl TidyState {
         // exactly what will be scanned.
         self.scan_path = path.to_string_lossy().into_owned();
         let options = self.scan_options.clone();
+        let progress = ScanProgress::new();
         let shared = Arc::new(Mutex::new(ScanInFlight {
             root: path.clone(),
             result: None,
+            progress: progress.clone(),
         }));
         let shared_clone = shared.clone();
+        let progress_clone = progress.clone();
         let ctx_clone = ctx.clone();
         self.scan_in_flight = Some(shared);
         self.status = format!("Scanning {}…", path.display());
@@ -235,7 +242,7 @@ impl TidyState {
         self.last_scan = None;
         self.dedup_report = None;
         std::thread::spawn(move || {
-            let mut scanner = Scanner::new(options);
+            let mut scanner = Scanner::new(options).with_progress(progress_clone);
             let outcome = scanner.scan(&path).map_err(|e| e.to_string()).map(|_| {
                 let report = scanner.report().clone();
                 (scanner.into_entries(), report)
@@ -245,6 +252,28 @@ impl TidyState {
             }
             ctx_clone.request_repaint();
         });
+    }
+
+    /// Request cancellation of the running scan, if any.
+    pub fn cancel_scan(&self) {
+        if let Some(shared) = &self.scan_in_flight
+            && let Ok(guard) = shared.lock()
+        {
+            guard.progress.request_cancel();
+        }
+    }
+
+    /// Snapshot of the current scan progress, if a scan is running.
+    pub fn scan_progress_snapshot(&self) -> Option<(u64, u64, u64, Option<PathBuf>)> {
+        let shared = self.scan_in_flight.as_ref()?;
+        let guard = shared.lock().ok()?;
+        let p = &guard.progress;
+        Some((
+            p.entries_seen.load(Ordering::Relaxed),
+            p.files_scanned.load(Ordering::Relaxed),
+            p.bytes_scanned.load(Ordering::Relaxed),
+            p.snapshot_current_path(),
+        ))
     }
 
     pub fn poll_scan(&mut self) {
@@ -566,9 +595,54 @@ fn header(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext, ctx: &egui::Cont
         }
         if running {
             ui.spinner();
-            ui.label(RichText::new("scanning…").color(cx.palette.text_dim));
+            if ui
+                .button(RichText::new("Cancel").color(cx.palette.critical))
+                .clicked()
+            {
+                state.cancel_scan();
+            }
         }
     });
+
+    // Live progress while a scan is running.
+    if state.scan_in_flight.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(150));
+        if let Some((entries_seen, files_scanned, bytes_scanned, current_path)) =
+            state.scan_progress_snapshot()
+        {
+            egui::Frame::none()
+                .fill(cx.palette.bg_elevated)
+                .stroke(egui::Stroke::new(1.0, cx.palette.border))
+                .rounding(egui::Rounding::same(8.0))
+                .inner_margin(egui::Margin::symmetric(14.0, 8.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("scanning")
+                                .color(cx.palette.accent)
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "· {} entries walked · {} files · {}",
+                                format_count(entries_seen),
+                                format_count(files_scanned),
+                                format_bytes(bytes_scanned)
+                            ))
+                            .color(cx.palette.text_dim),
+                        );
+                    });
+                    if let Some(dir) = current_path {
+                        ui.label(
+                            RichText::new(dir.to_string_lossy().into_owned())
+                                .color(cx.palette.text_subtle)
+                                .monospace()
+                                .small(),
+                        );
+                    }
+                });
+        }
+    }
 
     ui.horizontal_wrapped(|ui| {
         ui.checkbox(

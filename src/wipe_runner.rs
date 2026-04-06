@@ -264,6 +264,7 @@ fn finalize(
 }
 
 /// Report of a wipe followed by a forensic verification loop.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifiedWipeResult {
     pub initial_wipe: WipeResult,
@@ -288,6 +289,7 @@ pub struct VerifiedWipeResult {
 /// expected to use this against a free-space region or against a
 /// disk image. For the everyday Tidy case, one initial wipe is
 /// sufficient and the verification loop simply observes.
+#[allow(dead_code)]
 pub fn execute_wipe_with_verification(
     path: &Path,
     config: &WipeConfig,
