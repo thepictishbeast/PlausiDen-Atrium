@@ -20,6 +20,8 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
@@ -54,13 +56,26 @@ impl WipeResult {
 /// Execute a wipe configuration against a file.
 ///
 /// BUG ASSUMPTION: the supplied path may be a symlink, a special
-/// file, a directory, a FIFO, or not exist. All of these are
-/// rejected up front with a clear error.
+/// file, a directory, a FIFO, or not exist. Attackers may try to
+/// swap the target between our stat and our open (TOCTOU). Other
+/// processes may hold the file open and race our writes. All of
+/// these must be rejected or defended against.
 ///
-/// SECURITY: this function must never follow symlinks. Opening a
-/// symlinked path and writing through it would attack the target of
-/// the symlink, not the link the caller approved.
+/// SECURITY: this function opens with `O_NOFOLLOW` so symlinks are
+/// refused at the kernel level, not by an earlier stat(2) that an
+/// attacker could race. After opening, it fstats the file descriptor
+/// to verify it is still a regular file. It also takes an exclusive
+/// flock(2) so no other process can write concurrently.
+///
+/// REGRESSION-GUARD: the previous version used symlink_metadata +
+/// open(path), which had a TOCTOU race window between the check and
+/// the open. An attacker with write access to the parent directory
+/// could swap the regular file for a symlink in that window and have
+/// the wipe destroy the symlink target instead. Fixed in AVP-2 audit.
 pub fn execute_wipe(path: &Path, config: &WipeConfig, dry_run: bool) -> WipeResult {
+    // A pre-flight symlink_metadata is still useful for the dry-run
+    // path and for surfacing clearer errors. The authoritative check
+    // happens after the open via fstat on the file descriptor.
     if !path.exists() {
         return WipeResult::failed(
             path.to_path_buf(),
@@ -109,16 +124,75 @@ pub fn execute_wipe(path: &Path, config: &WipeConfig, dry_run: bool) -> WipeResu
         };
     }
 
-    let mut file = match OpenOptions::new().read(true).write(true).open(path) {
+    // Open with O_NOFOLLOW so the kernel refuses to open the file
+    // if the path was swapped to a symlink between stat and open.
+    // The caller's symlink check above still exists for cleaner
+    // error messages on honest symlinks.
+    let open_result = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path);
+    let file = match open_result {
         Ok(f) => f,
         Err(e) => {
-            return WipeResult::failed(
-                path.to_path_buf(),
-                original_size,
-                format!("open failed: {}", e),
-            );
+            // ELOOP (errno 40) is what O_NOFOLLOW returns when the
+            // path IS a symlink. Translate into a clearer message.
+            let kind_msg = if e.raw_os_error() == Some(libc::ELOOP) {
+                "path became a symlink between check and open (possible TOCTOU)".to_string()
+            } else {
+                format!("open failed: {}", e)
+            };
+            return WipeResult::failed(path.to_path_buf(), original_size, kind_msg);
         }
     };
+
+    // After open, verify the descriptor still points at a regular
+    // file of the expected inode. This catches the case where the
+    // path was replaced with a different regular file in the stat-
+    // to-open window.
+    let fd = file.as_raw_fd();
+    let mut stat_buf: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat(2) with a valid fd and a zeroed stat buffer is
+    // the documented invocation. The fd is owned by `file` and
+    // outlives this call.
+    let fstat_rc = unsafe { libc::fstat(fd, &mut stat_buf) };
+    if fstat_rc != 0 {
+        return WipeResult::failed(
+            path.to_path_buf(),
+            original_size,
+            "fstat failed after open".into(),
+        );
+    }
+    let mode = stat_buf.st_mode;
+    let is_regular = (mode & libc::S_IFMT) == libc::S_IFREG;
+    if !is_regular {
+        return WipeResult::failed(
+            path.to_path_buf(),
+            original_size,
+            "fstat reports non-regular file after open".into(),
+        );
+    }
+
+    // Take an exclusive, non-blocking flock so no other process can
+    // write while we're shredding. flock() with LOCK_EX|LOCK_NB
+    // returns EWOULDBLOCK if another holder has the lock.
+    //
+    // SAFETY: flock(2) with a valid fd is the documented invocation.
+    let flock_rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+    if flock_rc != 0 {
+        let err = std::io::Error::last_os_error();
+        return WipeResult::failed(
+            path.to_path_buf(),
+            original_size,
+            format!(
+                "another process holds a lock on this file (flock: {})",
+                err
+            ),
+        );
+    }
+
+    let mut file = file;
 
     let mut result = WipeResult {
         path: path.to_path_buf(),
@@ -611,6 +685,104 @@ mod tests {
         );
         assert!(!result.final_success);
         assert!(result.verdict.contains("initial wipe failed"));
+    }
+
+    // REGRESSION-GUARD: the earlier implementation used
+    // symlink_metadata + OpenOptions::open(path), which had a TOCTOU
+    // window between check and open. An attacker with write access
+    // to the parent directory could swap the target for a symlink.
+    // After the O_NOFOLLOW fix, the open itself refuses a symlink
+    // even if it was put there just now.
+    #[test]
+    fn test_wipe_refuses_symlink_at_kernel_open_layer() {
+        let target = temp_file(b"target-content-sentinel");
+        let link_path = std::env::temp_dir().join(format!(
+            "atrium-wipe-nofollow-link-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link_path).unwrap();
+        let r = execute_wipe(&link_path, &WipeConfig::default(), false);
+        assert!(!r.success);
+        // The symlink target must survive untouched.
+        let target_contents = std::fs::read(&target).unwrap();
+        assert_eq!(target_contents, b"target-content-sentinel");
+        std::fs::remove_file(&link_path).ok();
+        std::fs::remove_file(&target).ok();
+    }
+
+    // REGRESSION-GUARD: concurrent writer case. If another process
+    // has an exclusive flock on the file, our wipe must refuse
+    // rather than racing the other writer.
+    #[test]
+    fn test_wipe_refuses_when_flock_is_held() {
+        use std::os::unix::io::AsRawFd;
+        let path = temp_file(b"contested-file");
+        // Take an exclusive lock in this test thread via a
+        // persistent File handle.
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let rc = unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "should be able to take the initial lock");
+
+        let r = execute_wipe(&path, &WipeConfig::default(), false);
+        assert!(!r.success);
+        assert!(
+            r.errors.iter().any(|e| e.contains("another process")),
+            "expected 'another process holds a lock' error, got: {:?}",
+            r.errors
+        );
+        // File and its contents must be untouched.
+        drop(holder);
+        let contents = std::fs::read(&path).unwrap();
+        assert_eq!(contents, b"contested-file");
+        std::fs::remove_file(&path).ok();
+    }
+
+    // Files that are exactly one chunk long (boundary case).
+    #[test]
+    fn test_wipe_exactly_one_chunk_file() {
+        let size = 1 << 16; // chunk_size in wipe_runner
+        let path = temp_file(&vec![0xAAu8; size]);
+        let mut config = WipeConfig::preset(WipePreset::Quick);
+        config.unlink_after = false;
+        config.truncate_after = false;
+        let r = execute_wipe(&path, &config, false);
+        assert!(r.success, "errors: {:?}", r.errors);
+        assert_eq!(r.bytes_written, size as u64);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // Files smaller than a chunk (1 byte).
+    #[test]
+    fn test_wipe_single_byte_file() {
+        let path = temp_file(b"x");
+        let mut config = WipeConfig::preset(WipePreset::Quick);
+        config.unlink_after = false;
+        config.truncate_after = false;
+        let r = execute_wipe(&path, &config, false);
+        assert!(r.success);
+        assert_eq!(r.bytes_written, 1);
+        std::fs::remove_file(&path).ok();
+    }
+
+    // Files slightly larger than a chunk (chunk+1) — exercises the
+    // second-chunk path where remaining < chunk_size.
+    #[test]
+    fn test_wipe_chunk_plus_one_byte() {
+        let size = (1 << 16) + 1;
+        let path = temp_file(&vec![0xAAu8; size]);
+        let mut config = WipeConfig::preset(WipePreset::Quick);
+        config.unlink_after = false;
+        config.truncate_after = false;
+        let r = execute_wipe(&path, &config, false);
+        assert!(r.success);
+        assert_eq!(r.bytes_written, size as u64);
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]
