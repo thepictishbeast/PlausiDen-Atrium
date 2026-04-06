@@ -6,26 +6,43 @@
 //! which wipe presets exist, and which block devices Atrium can see.
 
 use crate::disk_wipe::{self, DeviceInfo};
-use crate::forensic::{self, ForensicTool, ToolInventory, INSTALL_HINT};
+use crate::forensic::{self, ForensicTool, ToolInventory, VerificationReport, INSTALL_HINT};
 use crate::formats::format_bytes;
 use crate::theme::{tokens, Palette};
 use crate::widgets::card_frame;
 use crate::wipe_config::WipePreset;
-use egui::{RichText, ScrollArea, TextStyle, Ui};
+use egui::{RichText, ScrollArea, TextEdit, TextStyle, Ui};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+pub struct VerifyInFlight {
+    #[allow(dead_code)]
+    pub tool: ForensicTool,
+    #[allow(dead_code)]
+    pub target: PathBuf,
+    pub result: Option<VerificationReport>,
+}
 
 pub struct ToolsState {
     pub inventory: ToolInventory,
     pub devices: Vec<DeviceInfo>,
-    #[allow(dead_code)]
-    pub refresh_requested: bool,
+    pub verify_tool: Option<ForensicTool>,
+    pub verify_target: String,
+    pub verify_in_flight: Option<Arc<Mutex<VerifyInFlight>>>,
+    pub verify_last_report: Option<VerificationReport>,
 }
 
 impl Default for ToolsState {
     fn default() -> Self {
+        let inventory = forensic::detect_tools();
+        let first_tool = inventory.preferred();
         Self {
-            inventory: forensic::detect_tools(),
+            inventory,
             devices: disk_wipe::list_block_devices(),
-            refresh_requested: false,
+            verify_tool: first_tool,
+            verify_target: String::new(),
+            verify_in_flight: None,
+            verify_last_report: None,
         }
     }
 }
@@ -34,10 +51,51 @@ impl ToolsState {
     pub fn refresh(&mut self) {
         self.inventory = forensic::detect_tools();
         self.devices = disk_wipe::list_block_devices();
+        if self.verify_tool.is_none() {
+            self.verify_tool = self.inventory.preferred();
+        }
+    }
+
+    pub fn start_verify(&mut self, ctx: &egui::Context) {
+        let Some(tool) = self.verify_tool else { return };
+        let target = PathBuf::from(self.verify_target.trim());
+        if target.as_os_str().is_empty() || !target.exists() {
+            return;
+        }
+        let shared = Arc::new(Mutex::new(VerifyInFlight {
+            tool,
+            target: target.clone(),
+            result: None,
+        }));
+        let shared_clone = shared.clone();
+        let ctx_clone = ctx.clone();
+        self.verify_in_flight = Some(shared);
+        self.verify_last_report = None;
+        std::thread::spawn(move || {
+            let out_dir = std::env::temp_dir()
+                .join(format!("atrium-verify-{}", std::process::id()));
+            let report = forensic::run_verification(tool, &target, &out_dir);
+            if let Ok(mut guard) = shared_clone.lock() {
+                guard.result = Some(report);
+            }
+            ctx_clone.request_repaint();
+        });
+    }
+
+    pub fn poll_verify(&mut self) {
+        let Some(shared) = self.verify_in_flight.clone() else { return };
+        let Ok(mut guard) = shared.lock() else { return };
+        if let Some(report) = guard.result.take() {
+            drop(guard);
+            self.verify_in_flight = None;
+            self.verify_last_report = Some(report);
+        }
     }
 }
 
-pub fn show(ui: &mut Ui, palette: &Palette, state: &mut ToolsState) {
+pub fn show(ui: &mut Ui, palette: &Palette, state: &mut ToolsState, ctx: &egui::Context) {
+    state.poll_verify();
+
     ui.label(
         RichText::new("Tools")
             .color(palette.text)
@@ -46,7 +104,7 @@ pub fn show(ui: &mut Ui, palette: &Palette, state: &mut ToolsState) {
     );
     ui.label(
         RichText::new(
-            "Forensic recovery verification, wipe presets, and disk devices. The destructive actions themselves are chosen per-item in the Tidy Plan — this drawer is read-only metadata and a place to review the options.",
+            "Forensic recovery verification, wipe presets, and disk devices. The destructive actions themselves are chosen per-item in the Tidy Plan — this drawer is for running verification runs and reviewing the options.",
         )
         .color(palette.text_dim),
     );
@@ -61,9 +119,143 @@ pub fn show(ui: &mut Ui, palette: &Palette, state: &mut ToolsState) {
     ScrollArea::vertical().show(ui, |ui| {
         forensic_tools_card(ui, palette, &state.inventory);
         ui.add_space(tokens::SPACE_SM);
+        verification_run_card(ui, palette, state, ctx);
+        ui.add_space(tokens::SPACE_SM);
         wipe_presets_card(ui, palette);
         ui.add_space(tokens::SPACE_SM);
         disk_devices_card(ui, palette, &state.devices);
+    });
+}
+
+fn verification_run_card(
+    ui: &mut Ui,
+    palette: &Palette,
+    state: &mut ToolsState,
+    ctx: &egui::Context,
+) {
+    card_frame(ui, palette, |ui| {
+        ui.label(
+            RichText::new("Run forensic verification")
+                .color(palette.text)
+                .text_style(TextStyle::Name("H2".into())),
+        );
+        ui.label(
+            RichText::new(
+                "Launch a detected recovery tool against a target (a disk image, a freespace scan, or a test directory). This runs the tool in a worker thread and surfaces the result when it completes. Forensic tools can take minutes on large targets; Atrium will not block the rest of the UI while one runs.",
+            )
+            .color(palette.text_dim),
+        );
+        ui.add_space(tokens::SPACE_SM);
+
+        if !state.inventory.is_any_available() {
+            ui.label(
+                RichText::new("No forensic tools detected — install one first.")
+                    .color(palette.warn)
+                    .strong(),
+            );
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Tool:");
+            let current_label = state
+                .verify_tool
+                .map(|t| t.binary())
+                .unwrap_or("(none)");
+            egui::ComboBox::from_id_salt("forensic-tool-picker")
+                .selected_text(current_label)
+                .show_ui(ui, |ui| {
+                    for tool in &state.inventory.available {
+                        ui.selectable_value(
+                            &mut state.verify_tool,
+                            Some(*tool),
+                            tool.binary(),
+                        );
+                    }
+                });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Target:");
+            ui.add(
+                TextEdit::singleline(&mut state.verify_target)
+                    .hint_text("/tmp or /dev/sdX or a disk image")
+                    .desired_width(420.0),
+            );
+            if ui.button("Pick directory…").clicked()
+                && let Some(d) = rfd::FileDialog::new().pick_folder()
+            {
+                state.verify_target = d.to_string_lossy().into_owned();
+            }
+            if ui.button("Pick file…").clicked()
+                && let Some(f) = rfd::FileDialog::new().pick_file()
+            {
+                state.verify_target = f.to_string_lossy().into_owned();
+            }
+        });
+
+        ui.add_space(4.0);
+        let running = state.verify_in_flight.is_some();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!running, egui::Button::new("Run verification"))
+                .clicked()
+            {
+                state.start_verify(ctx);
+            }
+            if running {
+                ui.spinner();
+                ui.label(RichText::new("running…").color(palette.text_dim));
+                ctx.request_repaint_after(std::time::Duration::from_millis(300));
+            }
+        });
+
+        if let Some(report) = &state.verify_last_report {
+            ui.add_space(tokens::SPACE_SM);
+            ui.separator();
+            ui.add_space(4.0);
+            let verdict_color = if report.success && report.files_recovered == 0 {
+                palette.ok
+            } else if report.files_recovered > 0 {
+                palette.warn
+            } else {
+                palette.critical
+            };
+            ui.label(
+                RichText::new(format!(
+                    "{} · {} files recovered",
+                    report.tool.binary(),
+                    report.files_recovered
+                ))
+                .color(verdict_color)
+                .strong(),
+            );
+            ui.label(
+                RichText::new(format!("target: {}", report.target.display()))
+                    .color(palette.text_dim)
+                    .small()
+                    .monospace(),
+            );
+            if let Some(err) = &report.error {
+                ui.label(
+                    RichText::new(format!("error: {}", err))
+                        .color(palette.critical)
+                        .small(),
+                );
+            }
+            if !report.raw_output.is_empty() {
+                ui.collapsing("Tool output", |ui| {
+                    ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                        ui.label(
+                            RichText::new(&report.raw_output)
+                                .color(palette.text_dim)
+                                .monospace()
+                                .small(),
+                        );
+                    });
+                });
+            }
+        }
     });
 }
 
