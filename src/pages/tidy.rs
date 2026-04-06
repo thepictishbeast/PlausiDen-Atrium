@@ -679,11 +679,11 @@ fn table_view(ui: &mut Ui, state: &mut TidyState, cx: &TidyContext, note: Option
 
                 row.col(|ui| {
                     let color = match verdict.importance {
-                        Importance::Critical => cx.palette.critical,
-                        Importance::High => cx.palette.high,
-                        Importance::Medium => cx.palette.medium,
-                        Importance::Low => cx.palette.low,
-                        Importance::Trash => cx.palette.trash,
+                        Importance::Critical => cx.palette.tier_critical,
+                        Importance::High => cx.palette.tier_high,
+                        Importance::Medium => cx.palette.tier_medium,
+                        Importance::Low => cx.palette.tier_low,
+                        Importance::Trash => cx.palette.tier_trash,
                     };
                     size_bar(ui, entry.size, max_size, color);
                 });

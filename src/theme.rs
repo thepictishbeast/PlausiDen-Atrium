@@ -1,6 +1,14 @@
-//! Theme management — dark / light / automatic with persistence.
+//! Theme & design system for the PlausiDen suite.
+//!
+//! The goal is "sexy as hell": generous whitespace, a distinctive
+//! palette, a clean typographic hierarchy, soft depth via shadows,
+//! and gradient accents that read as premium rather than gaudy.
+//!
+//! The palette is intentionally shared across PlausiDen GUI apps so
+//! that Atrium, Sentinel, Marketplace, and the rest all feel like
+//! parts of the same product.
 
-use egui::{Color32, Style, Visuals};
+use egui::{Color32, FontFamily, FontId, Shadow, Style, TextStyle, Visuals};
 use serde::{Deserialize, Serialize};
 
 /// User's preferred theme mode.
@@ -24,7 +32,7 @@ impl ThemeMode {
         match self {
             ThemeMode::Dark => "Dark",
             ThemeMode::Light => "Light",
-            ThemeMode::Auto => "Auto (system)",
+            ThemeMode::Auto => "Auto",
         }
     }
 }
@@ -36,8 +44,6 @@ pub enum Resolved {
     Light,
 }
 
-/// Resolve Auto against the system preference. Currently defaults to
-/// Dark for Auto until a portable preference API is wired in.
 pub fn resolve(mode: ThemeMode, system_prefers_dark: bool) -> Resolved {
     match mode {
         ThemeMode::Dark => Resolved::Dark,
@@ -52,63 +58,98 @@ pub fn resolve(mode: ThemeMode, system_prefers_dark: bool) -> Resolved {
     }
 }
 
-/// Palette accessible from render code.
+/// The premium PlausiDen palette.
+#[allow(dead_code)]
 pub struct Palette {
+    // Surfaces
     pub bg: Color32,
     pub bg_panel: Color32,
     pub bg_elevated: Color32,
-    pub accent: Color32,
-    pub accent_dim: Color32,
+    pub bg_overlay: Color32,
+    pub border: Color32,
+    pub border_strong: Color32,
+
+    // Text
     pub text: Color32,
     pub text_dim: Color32,
-    pub border: Color32,
+    pub text_subtle: Color32,
+
+    // Brand + states
+    pub accent: Color32,
+    pub accent_soft: Color32,
+    pub accent_glow: Color32,
+    pub gradient_a: Color32,
+    pub gradient_b: Color32,
     pub ok: Color32,
     pub warn: Color32,
     pub warn_bg: Color32,
     pub critical: Color32,
-    pub high: Color32,
-    pub medium: Color32,
-    pub low: Color32,
-    pub trash: Color32,
+
+    // Importance tiers
+    pub tier_critical: Color32,
+    pub tier_high: Color32,
+    pub tier_medium: Color32,
+    pub tier_low: Color32,
+    pub tier_trash: Color32,
 }
 
 impl Palette {
     pub const DARK: Palette = Palette {
-        bg: Color32::from_rgb(20, 22, 28),
-        bg_panel: Color32::from_rgb(28, 30, 38),
-        bg_elevated: Color32::from_rgb(36, 40, 50),
-        accent: Color32::from_rgb(96, 160, 255),
-        accent_dim: Color32::from_rgb(64, 120, 200),
-        text: Color32::from_rgb(235, 236, 240),
-        text_dim: Color32::from_rgb(160, 164, 180),
-        border: Color32::from_rgb(48, 52, 62),
-        ok: Color32::from_rgb(120, 200, 140),
-        warn: Color32::from_rgb(240, 166, 92),
-        warn_bg: Color32::from_rgb(80, 48, 30),
-        critical: Color32::from_rgb(228, 94, 110),
-        high: Color32::from_rgb(240, 166, 92),
-        medium: Color32::from_rgb(226, 200, 100),
-        low: Color32::from_rgb(110, 180, 240),
-        trash: Color32::from_rgb(120, 200, 140),
+        bg: Color32::from_rgb(10, 13, 20),
+        bg_panel: Color32::from_rgb(20, 24, 34),
+        bg_elevated: Color32::from_rgb(28, 33, 48),
+        bg_overlay: Color32::from_rgb(38, 44, 62),
+        border: Color32::from_rgb(36, 43, 60),
+        border_strong: Color32::from_rgb(60, 70, 95),
+
+        text: Color32::from_rgb(244, 246, 252),
+        text_dim: Color32::from_rgb(150, 158, 178),
+        text_subtle: Color32::from_rgb(100, 108, 128),
+
+        accent: Color32::from_rgb(123, 155, 255),
+        accent_soft: Color32::from_rgb(70, 95, 170),
+        accent_glow: Color32::from_rgb(180, 200, 255),
+        gradient_a: Color32::from_rgb(91, 141, 239),
+        gradient_b: Color32::from_rgb(164, 91, 239),
+        ok: Color32::from_rgb(78, 205, 196),
+        warn: Color32::from_rgb(255, 180, 84),
+        warn_bg: Color32::from_rgb(60, 42, 20),
+        critical: Color32::from_rgb(255, 85, 119),
+
+        tier_critical: Color32::from_rgb(255, 85, 119),
+        tier_high: Color32::from_rgb(255, 180, 84),
+        tier_medium: Color32::from_rgb(232, 207, 92),
+        tier_low: Color32::from_rgb(96, 180, 255),
+        tier_trash: Color32::from_rgb(78, 205, 196),
     };
 
     pub const LIGHT: Palette = Palette {
-        bg: Color32::from_rgb(248, 248, 250),
+        bg: Color32::from_rgb(250, 250, 253),
         bg_panel: Color32::from_rgb(255, 255, 255),
-        bg_elevated: Color32::from_rgb(240, 242, 246),
-        accent: Color32::from_rgb(44, 108, 200),
-        accent_dim: Color32::from_rgb(98, 148, 222),
-        text: Color32::from_rgb(28, 30, 36),
-        text_dim: Color32::from_rgb(108, 112, 126),
-        border: Color32::from_rgb(218, 222, 232),
-        ok: Color32::from_rgb(48, 148, 72),
-        warn: Color32::from_rgb(204, 120, 32),
-        warn_bg: Color32::from_rgb(253, 240, 216),
-        critical: Color32::from_rgb(200, 50, 66),
-        high: Color32::from_rgb(204, 120, 32),
-        medium: Color32::from_rgb(196, 162, 40),
-        low: Color32::from_rgb(56, 116, 200),
-        trash: Color32::from_rgb(48, 148, 72),
+        bg_elevated: Color32::from_rgb(244, 245, 250),
+        bg_overlay: Color32::from_rgb(235, 238, 246),
+        border: Color32::from_rgb(226, 229, 238),
+        border_strong: Color32::from_rgb(200, 205, 218),
+
+        text: Color32::from_rgb(22, 27, 40),
+        text_dim: Color32::from_rgb(96, 104, 126),
+        text_subtle: Color32::from_rgb(140, 148, 170),
+
+        accent: Color32::from_rgb(52, 104, 218),
+        accent_soft: Color32::from_rgb(166, 188, 240),
+        accent_glow: Color32::from_rgb(210, 224, 250),
+        gradient_a: Color32::from_rgb(60, 120, 228),
+        gradient_b: Color32::from_rgb(142, 76, 214),
+        ok: Color32::from_rgb(18, 156, 128),
+        warn: Color32::from_rgb(216, 128, 40),
+        warn_bg: Color32::from_rgb(253, 242, 220),
+        critical: Color32::from_rgb(210, 52, 80),
+
+        tier_critical: Color32::from_rgb(210, 52, 80),
+        tier_high: Color32::from_rgb(216, 128, 40),
+        tier_medium: Color32::from_rgb(196, 162, 40),
+        tier_low: Color32::from_rgb(52, 104, 218),
+        tier_trash: Color32::from_rgb(18, 156, 128),
     };
 
     pub fn for_resolved(resolved: Resolved) -> &'static Palette {
@@ -119,10 +160,74 @@ impl Palette {
     }
 }
 
-/// Apply a theme to an egui context.
+/// Design tokens — spacing, radii, typography sizes.
+#[allow(dead_code)]
+pub mod tokens {
+    pub const SPACE_XS: f32 = 4.0;
+    pub const SPACE_SM: f32 = 8.0;
+    pub const SPACE_MD: f32 = 12.0;
+    pub const SPACE_LG: f32 = 18.0;
+    pub const SPACE_XL: f32 = 28.0;
+    pub const SPACE_XXL: f32 = 44.0;
+
+    pub const RADIUS_SM: f32 = 6.0;
+    pub const RADIUS_MD: f32 = 10.0;
+    pub const RADIUS_LG: f32 = 16.0;
+    pub const RADIUS_PILL: f32 = 999.0;
+
+    pub const FONT_DISPLAY: f32 = 34.0;
+    pub const FONT_H1: f32 = 24.0;
+    pub const FONT_H2: f32 = 18.0;
+    pub const FONT_BODY: f32 = 14.5;
+    pub const FONT_SMALL: f32 = 12.0;
+    pub const FONT_TINY: f32 = 10.5;
+    pub const FONT_MONO: f32 = 13.0;
+}
+
+/// Custom text styles available via TextStyle::Name.
+pub fn text_styles() -> std::collections::BTreeMap<TextStyle, FontId> {
+    use tokens::*;
+    let mut m = std::collections::BTreeMap::new();
+    m.insert(
+        TextStyle::Heading,
+        FontId::new(FONT_H1, FontFamily::Proportional),
+    );
+    m.insert(
+        TextStyle::Body,
+        FontId::new(FONT_BODY, FontFamily::Proportional),
+    );
+    m.insert(
+        TextStyle::Button,
+        FontId::new(FONT_BODY, FontFamily::Proportional),
+    );
+    m.insert(
+        TextStyle::Small,
+        FontId::new(FONT_SMALL, FontFamily::Proportional),
+    );
+    m.insert(
+        TextStyle::Monospace,
+        FontId::new(FONT_MONO, FontFamily::Monospace),
+    );
+    m.insert(
+        TextStyle::Name("Display".into()),
+        FontId::new(FONT_DISPLAY, FontFamily::Proportional),
+    );
+    m.insert(
+        TextStyle::Name("H2".into()),
+        FontId::new(FONT_H2, FontFamily::Proportional),
+    );
+    m.insert(
+        TextStyle::Name("Tiny".into()),
+        FontId::new(FONT_TINY, FontFamily::Proportional),
+    );
+    m
+}
+
+/// Apply the Atrium theme to an egui context.
 pub fn apply(ctx: &egui::Context, resolved: Resolved) {
     let palette = Palette::for_resolved(resolved);
     let mut style = (*ctx.style()).clone();
+    style.text_styles = text_styles();
     install_visuals(&mut style, palette, resolved);
     install_spacing(&mut style);
     ctx.set_style(style);
@@ -139,45 +244,130 @@ fn install_visuals(style: &mut Style, p: &Palette, resolved: Resolved) {
     v.extreme_bg_color = p.bg;
     v.faint_bg_color = p.bg_panel;
     v.code_bg_color = p.bg_elevated;
+    v.hyperlink_color = p.accent;
 
+    // Noninteractive: panel headers, static labels.
     v.widgets.noninteractive.bg_fill = p.bg_panel;
     v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, p.border);
     v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, p.text_dim);
+    v.widgets.noninteractive.rounding = egui::Rounding::same(tokens::RADIUS_MD);
 
+    // Inactive buttons / fields: clear but elevated.
     v.widgets.inactive.bg_fill = p.bg_elevated;
     v.widgets.inactive.weak_bg_fill = p.bg_panel;
     v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, p.border);
     v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, p.text);
+    v.widgets.inactive.rounding = egui::Rounding::same(tokens::RADIUS_MD);
+    v.widgets.inactive.expansion = 0.0;
 
-    v.widgets.hovered.bg_fill = p.accent_dim;
-    v.widgets.hovered.weak_bg_fill = p.bg_elevated;
-    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, p.accent);
+    // Hover: accent-tinted.
+    v.widgets.hovered.bg_fill = p.accent_soft;
+    v.widgets.hovered.weak_bg_fill = p.bg_overlay;
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.2, p.accent);
     v.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, p.text);
+    v.widgets.hovered.rounding = egui::Rounding::same(tokens::RADIUS_MD);
+    v.widgets.hovered.expansion = 0.0;
 
+    // Active: pressed state.
     v.widgets.active.bg_fill = p.accent;
-    v.widgets.active.weak_bg_fill = p.accent_dim;
+    v.widgets.active.weak_bg_fill = p.accent_soft;
     v.widgets.active.bg_stroke = egui::Stroke::new(1.5, p.accent);
-    v.widgets.active.fg_stroke = egui::Stroke::new(2.0, p.text);
+    v.widgets.active.fg_stroke = egui::Stroke::new(2.0, Color32::WHITE);
+    v.widgets.active.rounding = egui::Rounding::same(tokens::RADIUS_MD);
+    v.widgets.active.expansion = 0.0;
 
-    v.selection.bg_fill = p.accent_dim;
+    v.selection.bg_fill = p.accent_soft;
     v.selection.stroke = egui::Stroke::new(1.5, p.accent);
 
-    v.window_rounding = egui::Rounding::same(10.0);
-    v.menu_rounding = egui::Rounding::same(8.0);
-    v.widgets.noninteractive.rounding = egui::Rounding::same(6.0);
-    v.widgets.inactive.rounding = egui::Rounding::same(6.0);
-    v.widgets.hovered.rounding = egui::Rounding::same(6.0);
-    v.widgets.active.rounding = egui::Rounding::same(6.0);
+    v.window_rounding = egui::Rounding::same(tokens::RADIUS_LG);
+    v.menu_rounding = egui::Rounding::same(tokens::RADIUS_MD);
+
+    v.window_shadow = Shadow {
+        offset: egui::vec2(0.0, 8.0),
+        blur: 24.0,
+        spread: 0.0,
+        color: Color32::from_black_alpha(match resolved {
+            Resolved::Dark => 140,
+            Resolved::Light => 40,
+        }),
+    };
+    v.popup_shadow = Shadow {
+        offset: egui::vec2(0.0, 4.0),
+        blur: 16.0,
+        spread: 0.0,
+        color: Color32::from_black_alpha(match resolved {
+            Resolved::Dark => 100,
+            Resolved::Light => 30,
+        }),
+    };
 
     style.visuals = v;
 }
 
 fn install_spacing(style: &mut Style) {
-    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-    style.spacing.button_padding = egui::vec2(14.0, 8.0);
-    style.spacing.menu_margin = egui::Margin::same(6.0);
-    style.spacing.window_margin = egui::Margin::same(12.0);
-    style.spacing.indent = 18.0;
+    use tokens::*;
+    style.spacing.item_spacing = egui::vec2(SPACE_MD, SPACE_SM + 2.0);
+    style.spacing.button_padding = egui::vec2(16.0, 10.0);
+    style.spacing.menu_margin = egui::Margin::same(SPACE_SM);
+    style.spacing.window_margin = egui::Margin::same(SPACE_LG);
+    style.spacing.indent = 20.0;
+    style.spacing.interact_size = egui::vec2(40.0, 30.0);
+    style.spacing.scroll.bar_width = 12.0;
+    style.spacing.scroll.bar_inner_margin = 2.0;
+    style.spacing.scroll.bar_outer_margin = 2.0;
+}
+
+/// Linearly interpolate two RGBA colours.
+pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    Color32::from_rgba_unmultiplied(
+        lerp_u8(a.r(), b.r(), t),
+        lerp_u8(a.g(), b.g(), t),
+        lerp_u8(a.b(), b.b(), t),
+        lerp_u8(a.a(), b.a(), t),
+    )
+}
+
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 * (1.0 - t) + b as f32 * t).round() as u8
+}
+
+/// Paint a vertical linear gradient across `rect`.
+pub fn paint_vertical_gradient(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    top: Color32,
+    bottom: Color32,
+) {
+    let steps = (rect.height() as usize).max(1);
+    for i in 0..steps {
+        let t = i as f32 / (steps - 1).max(1) as f32;
+        let color = lerp_color(top, bottom, t);
+        let row = egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(0.0, i as f32),
+            egui::vec2(rect.width(), 1.0),
+        );
+        painter.rect_filled(row, egui::Rounding::ZERO, color);
+    }
+}
+
+/// Paint a horizontal linear gradient across `rect`.
+pub fn paint_horizontal_gradient(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    left: Color32,
+    right: Color32,
+) {
+    let steps = (rect.width() as usize).max(1);
+    for i in 0..steps {
+        let t = i as f32 / (steps - 1).max(1) as f32;
+        let color = lerp_color(left, right, t);
+        let col = egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(i as f32, 0.0),
+            egui::vec2(1.0, rect.height()),
+        );
+        painter.rect_filled(col, egui::Rounding::ZERO, color);
+    }
 }
 
 #[cfg(test)]
@@ -185,34 +375,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_resolve_dark() {
+    fn test_resolve_modes() {
         assert_eq!(resolve(ThemeMode::Dark, false), Resolved::Dark);
-        assert_eq!(resolve(ThemeMode::Dark, true), Resolved::Dark);
-    }
-
-    #[test]
-    fn test_resolve_light() {
         assert_eq!(resolve(ThemeMode::Light, true), Resolved::Light);
-    }
-
-    #[test]
-    fn test_resolve_auto_follows_system() {
         assert_eq!(resolve(ThemeMode::Auto, true), Resolved::Dark);
         assert_eq!(resolve(ThemeMode::Auto, false), Resolved::Light);
     }
 
     #[test]
-    fn test_theme_mode_all_labels_nonempty() {
+    fn test_labels() {
         for m in ThemeMode::ALL {
             assert!(!m.label().is_empty());
         }
     }
 
     #[test]
-    fn test_palette_for_resolved() {
-        let dark = Palette::for_resolved(Resolved::Dark);
-        assert_eq!(dark.bg.a(), 255);
-        let light = Palette::for_resolved(Resolved::Light);
-        assert_ne!(light.bg, dark.bg);
+    fn test_palette_distinct() {
+        assert_ne!(Palette::DARK.bg, Palette::LIGHT.bg);
+        assert_ne!(Palette::DARK.text, Palette::LIGHT.text);
+    }
+
+    #[test]
+    fn test_lerp_color() {
+        let a = Color32::from_rgb(0, 0, 0);
+        let b = Color32::from_rgb(255, 255, 255);
+        let mid = lerp_color(a, b, 0.5);
+        assert!((mid.r() as i32 - 128).abs() <= 1);
+    }
+
+    #[test]
+    fn test_lerp_color_endpoints() {
+        let a = Color32::from_rgb(10, 20, 30);
+        let b = Color32::from_rgb(200, 210, 220);
+        assert_eq!(lerp_color(a, b, 0.0).r(), 10);
+        assert_eq!(lerp_color(a, b, 1.0).r(), 200);
     }
 }

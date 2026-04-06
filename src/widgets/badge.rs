@@ -28,10 +28,10 @@ pub fn importance_badge(ui: &mut Ui, palette: &Palette, imp: Importance) -> Resp
 
 pub fn colour_and_label(palette: &Palette, imp: Importance) -> (Color32, &'static str) {
     match imp {
-        Importance::Critical => (palette.critical, "CRITICAL"),
-        Importance::High => (palette.high, "HIGH"),
-        Importance::Medium => (palette.medium, "MEDIUM"),
-        Importance::Low => (palette.low, "LOW"),
-        Importance::Trash => (palette.trash, "TRASH"),
+        Importance::Critical => (palette.tier_critical, "CRITICAL"),
+        Importance::High => (palette.tier_high, "HIGH"),
+        Importance::Medium => (palette.tier_medium, "MEDIUM"),
+        Importance::Low => (palette.tier_low, "LOW"),
+        Importance::Trash => (palette.tier_trash, "TRASH"),
     }
 }

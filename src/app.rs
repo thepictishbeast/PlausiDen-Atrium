@@ -9,8 +9,8 @@ use crate::pages::{
     tidy::{self, TidyContext, TidyState},
     Page,
 };
-use crate::theme::{self, Palette, Resolved, ThemeMode};
-use egui::{RichText, Ui};
+use crate::theme::{self, paint_vertical_gradient, tokens, Palette, Resolved, ThemeMode};
+use egui::{Color32, RichText, TextStyle, Ui};
 use plausiden_tidy::environment::{self, EnvironmentReport};
 use plausiden_tidy::importance::ImportanceClassifier;
 
@@ -60,58 +60,97 @@ impl AtriumApp {
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("PlausiDen")
-                .color(self.palette().text)
-                .size(18.0)
-                .strong(),
-        );
-        ui.label(
-            RichText::new("Atrium")
-                .color(self.palette().text_dim)
-                .italics(),
-        );
-        ui.add_space(10.0);
+        let palette = self.palette();
+        ui.add_space(tokens::SPACE_MD);
 
+        // Brand emblem — gradient pill with the project name.
+        let (emblem_rect, _) =
+            ui.allocate_exact_size(egui::vec2(184.0, 48.0), egui::Sense::hover());
+        paint_vertical_gradient(
+            ui.painter(),
+            emblem_rect,
+            palette.gradient_a,
+            palette.gradient_b,
+        );
+        ui.painter().rect_stroke(
+            emblem_rect,
+            egui::Rounding::same(tokens::RADIUS_MD),
+            egui::Stroke::new(1.0, Color32::from_white_alpha(50)),
+        );
+        ui.painter().text(
+            emblem_rect.center() - egui::vec2(0.0, 6.0),
+            egui::Align2::CENTER_CENTER,
+            "PlausiDen",
+            egui::FontId::proportional(17.0),
+            Color32::WHITE,
+        );
+        ui.painter().text(
+            emblem_rect.center() + egui::vec2(0.0, 10.0),
+            egui::Align2::CENTER_CENTER,
+            "ATRIUM",
+            egui::FontId::proportional(11.0),
+            Color32::from_white_alpha(210),
+        );
+
+        ui.add_space(tokens::SPACE_LG);
+
+        // Navigation
         for page in Page::ALL {
             let selected = self.page == page;
-            let text = RichText::new(format!("  {}  {}", page.icon(), page.label()))
-                .color(if selected {
-                    self.palette().accent
-                } else {
-                    self.palette().text
-                })
-                .size(15.0);
-            let btn = ui.add_sized([180.0, 34.0], egui::SelectableLabel::new(selected, text));
+            let label_text = format!("  {}   {}", page.icon(), page.label());
+            let color = if selected { palette.accent } else { palette.text };
+            let text = RichText::new(label_text)
+                .color(color)
+                .text_style(TextStyle::Body);
+            let btn = ui.add_sized(
+                [190.0, 38.0],
+                egui::SelectableLabel::new(selected, text),
+            );
             if btn.clicked() {
                 self.page = page;
             }
         }
 
-        ui.add_space(14.0);
+        ui.add_space(tokens::SPACE_LG);
         ui.separator();
-        ui.add_space(8.0);
+        ui.add_space(tokens::SPACE_MD);
 
         ui.label(
-            RichText::new("Plan summary")
-                .color(self.palette().text_dim)
-                .small(),
+            RichText::new("PLAN")
+                .color(palette.text_subtle)
+                .text_style(TextStyle::Name("Tiny".into()))
+                .strong(),
         );
-        ui.label(format!("  items: {}", self.tidy.plan.len()));
-        ui.label(format!(
-            "  approved: {}",
-            self.tidy.plan.approved_count()
-        ));
+        ui.label(
+            RichText::new(format!("{} items", self.tidy.plan.len()))
+                .color(palette.text),
+        );
+        ui.label(
+            RichText::new(format!(
+                "{} approved",
+                self.tidy.plan.approved_count()
+            ))
+            .color(palette.text_dim),
+        );
 
-        ui.add_space(10.0);
+        ui.add_space(tokens::SPACE_MD);
         ui.separator();
-        ui.add_space(6.0);
+        ui.add_space(tokens::SPACE_SM);
 
+        ui.label(
+            RichText::new("SAFETY")
+                .color(palette.text_subtle)
+                .text_style(TextStyle::Name("Tiny".into()))
+                .strong(),
+        );
         let lock_label = if self.config.dry_run_locked {
-            RichText::new("🔒 dry-run locked").color(self.palette().ok)
+            RichText::new("🔒  Dry-run locked")
+                .color(palette.ok)
+                .strong()
         } else {
-            RichText::new("⚠ live mode").color(self.palette().critical)
+            RichText::new("⚠  Live mode")
+                .color(palette.critical)
+                .strong()
         };
         ui.label(lock_label);
     }
