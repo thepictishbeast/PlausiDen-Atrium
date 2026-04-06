@@ -261,7 +261,13 @@ impl eframe::App for AtriumApp {
                 tidy::show(ui, &mut self.tidy, &cx, ctx);
             }
             Page::Tools => {
-                tools::show(ui, self.palette(), &mut self.tools, ctx);
+                tools::show(
+                    ui,
+                    self.palette(),
+                    &mut self.tools,
+                    ctx,
+                    self.config.dry_run_locked,
+                );
             }
             Page::Docs => {
                 docs_page::show(ui, self.palette());

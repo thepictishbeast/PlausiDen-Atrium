@@ -5,15 +5,38 @@
 //! *meta*-tools drawer: which forensic recovery tools are detected,
 //! which wipe presets exist, and which block devices Atrium can see.
 
-use crate::disk_wipe::{self, DeviceInfo};
+use crate::disk_wipe::{self, DeviceInfo, DiskRange, DiskWipeReport};
 use crate::forensic::{self, ForensicTool, ToolInventory, VerificationReport, INSTALL_HINT};
 use crate::formats::format_bytes;
 use crate::theme::{tokens, Palette};
 use crate::widgets::card_frame;
-use crate::wipe_config::WipePreset;
+use crate::wipe_config::{WipeConfig, WipePreset};
 use egui::{RichText, ScrollArea, TextEdit, TextStyle, Ui};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+/// Per-device disk-range wipe form state.
+#[derive(Debug, Clone)]
+pub struct RangeForm {
+    pub start_text: String,
+    pub end_text: String,
+    pub preset: WipePreset,
+    pub confirm_device: String,
+    pub last_report: Option<DiskWipeReport>,
+}
+
+impl Default for RangeForm {
+    fn default() -> Self {
+        Self {
+            start_text: "0".into(),
+            end_text: "0".into(),
+            preset: WipePreset::Quick,
+            confirm_device: String::new(),
+            last_report: None,
+        }
+    }
+}
 
 pub struct VerifyInFlight {
     #[allow(dead_code)]
@@ -30,6 +53,10 @@ pub struct ToolsState {
     pub verify_target: String,
     pub verify_in_flight: Option<Arc<Mutex<VerifyInFlight>>>,
     pub verify_last_report: Option<VerificationReport>,
+    /// Per-device disk-range wipe forms, keyed by device name.
+    pub range_forms: HashMap<String, RangeForm>,
+    /// Which device's range form is currently open (collapsible).
+    pub range_open_for: Option<String>,
 }
 
 impl Default for ToolsState {
@@ -43,6 +70,8 @@ impl Default for ToolsState {
             verify_target: String::new(),
             verify_in_flight: None,
             verify_last_report: None,
+            range_forms: HashMap::new(),
+            range_open_for: None,
         }
     }
 }
@@ -93,7 +122,13 @@ impl ToolsState {
     }
 }
 
-pub fn show(ui: &mut Ui, palette: &Palette, state: &mut ToolsState, ctx: &egui::Context) {
+pub fn show(
+    ui: &mut Ui,
+    palette: &Palette,
+    state: &mut ToolsState,
+    ctx: &egui::Context,
+    safety_lock_on: bool,
+) {
     state.poll_verify();
 
     ui.label(
@@ -123,7 +158,7 @@ pub fn show(ui: &mut Ui, palette: &Palette, state: &mut ToolsState, ctx: &egui::
         ui.add_space(tokens::SPACE_SM);
         wipe_presets_card(ui, palette);
         ui.add_space(tokens::SPACE_SM);
-        disk_devices_card(ui, palette, &state.devices);
+        disk_devices_card(ui, palette, state, safety_lock_on);
     });
 }
 
@@ -371,22 +406,22 @@ fn wipe_presets_card(ui: &mut Ui, palette: &Palette) {
     });
 }
 
-fn disk_devices_card(ui: &mut Ui, palette: &Palette, devices: &[DeviceInfo]) {
+fn disk_devices_card(ui: &mut Ui, palette: &Palette, state: &mut ToolsState, safety_lock_on: bool) {
     card_frame(ui, palette, |ui| {
         ui.label(
-            RichText::new("Block devices")
+            RichText::new("Block devices · disk-range wipe")
                 .color(palette.text)
                 .text_style(TextStyle::Name("H2".into())),
         );
         ui.label(
             RichText::new(
-                "All block devices visible in /sys/block. Disk-range wiping lets you target a specific byte interval on one of these — an advanced feature guarded behind the safety lock in Settings.",
+                "Target a specific byte interval on a block device with any WipeConfig preset. Extremely destructive. Guarded behind the safety lock in Settings, a per-wipe confirmation, and a dry-run fallback.",
             )
             .color(palette.text_dim),
         );
         ui.add_space(tokens::SPACE_SM);
 
-        if devices.is_empty() {
+        if state.devices.is_empty() {
             ui.label(
                 RichText::new("No block devices visible (permissions?).")
                     .color(palette.warn),
@@ -394,7 +429,10 @@ fn disk_devices_card(ui: &mut Ui, palette: &Palette, devices: &[DeviceInfo]) {
             return;
         }
 
-        for dev in devices {
+        // Clone the device list so we can mutate state inside the loop.
+        let devices: Vec<DeviceInfo> = state.devices.clone();
+
+        for dev in &devices {
             ui.horizontal(|ui| {
                 let color = if dev.rotational {
                     palette.tier_high
@@ -411,19 +449,213 @@ fn disk_devices_card(ui: &mut Ui, palette: &Palette, devices: &[DeviceInfo]) {
                         .strong(),
                 );
                 ui.label(
-                    RichText::new(format!("{} · {}", format_bytes(dev.size_bytes), dev.storage_label()))
-                        .color(palette.text_dim),
+                    RichText::new(format!(
+                        "{} · {}",
+                        format_bytes(dev.size_bytes),
+                        dev.storage_label()
+                    ))
+                    .color(palette.text_dim),
                 );
+                let open = state
+                    .range_open_for
+                    .as_ref()
+                    .map(|n| n == &dev.name)
+                    .unwrap_or(false);
+                let label = if open { "Hide wipe form" } else { "Wipe a range…" };
+                if ui.button(label).clicked() {
+                    if open {
+                        state.range_open_for = None;
+                    } else {
+                        state.range_open_for = Some(dev.name.clone());
+                    }
+                }
             });
+
+            // Show the expanded form under the device row.
+            if state
+                .range_open_for
+                .as_ref()
+                .map(|n| n == &dev.name)
+                .unwrap_or(false)
+            {
+                ui.indent(format!("range-form-{}", dev.name), |ui| {
+                    range_form_for(ui, palette, dev, state, safety_lock_on);
+                });
+            }
         }
 
         ui.add_space(tokens::SPACE_SM);
         ui.label(
             RichText::new(
-                "⚠  Writing to the wrong device will destroy data. Atrium refuses to run disk wipes unless the safety lock is explicitly released in Settings.",
+                "⚠  Disk-range wipe writes directly to /dev/*. Pointing this at the wrong device will destroy data. Keep the safety lock engaged unless you are certain.",
             )
             .color(palette.warn)
             .small(),
         );
     });
+}
+
+fn range_form_for(
+    ui: &mut Ui,
+    palette: &Palette,
+    dev: &DeviceInfo,
+    state: &mut ToolsState,
+    safety_lock_on: bool,
+) {
+    let form = state
+        .range_forms
+        .entry(dev.name.clone())
+        .or_insert_with(RangeForm::default);
+
+    egui::Frame::none()
+        .fill(palette.bg_panel)
+        .stroke(egui::Stroke::new(1.0, palette.warn))
+        .rounding(egui::Rounding::same(8.0))
+        .inner_margin(egui::Margin::same(12.0))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(format!("Range wipe: /dev/{}", dev.name))
+                    .color(palette.warn)
+                    .strong(),
+            );
+            ui.label(
+                RichText::new(format!(
+                    "Device size: {} ({}).",
+                    format_bytes(dev.size_bytes),
+                    dev.storage_label()
+                ))
+                .color(palette.text_dim)
+                .small(),
+            );
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                ui.label("Start (bytes):");
+                ui.add(
+                    TextEdit::singleline(&mut form.start_text)
+                        .desired_width(140.0)
+                        .hint_text("0"),
+                );
+                ui.label("End (bytes):");
+                ui.add(
+                    TextEdit::singleline(&mut form.end_text)
+                        .desired_width(140.0)
+                        .hint_text(&format!("{}", dev.size_bytes)),
+                );
+            });
+
+            ui.horizontal(|ui| {
+                ui.label("Preset:");
+                egui::ComboBox::from_id_salt(format!("range-preset-{}", dev.name))
+                    .selected_text(form.preset.label())
+                    .show_ui(ui, |ui| {
+                        for preset in WipePreset::ALL {
+                            ui.selectable_value(&mut form.preset, *preset, preset.label());
+                        }
+                    });
+                let config = WipeConfig::preset(form.preset);
+                ui.label(
+                    RichText::new(format!("{} pass(es)", config.total_passes()))
+                        .color(palette.accent)
+                        .small(),
+                );
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("Type the device name to confirm:")
+                        .color(palette.text_dim),
+                );
+                ui.add(
+                    TextEdit::singleline(&mut form.confirm_device)
+                        .desired_width(140.0)
+                        .hint_text(&dev.name),
+                );
+            });
+
+            let start = form.start_text.trim().parse::<u64>().unwrap_or(0);
+            let end = form.end_text.trim().parse::<u64>().unwrap_or(0);
+            let range_valid = end > start && end <= dev.size_bytes;
+            let name_matches = form.confirm_device.trim() == dev.name;
+            let live = !safety_lock_on;
+            let can_run = range_valid && name_matches;
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let label = if live {
+                    "Run range wipe (LIVE)"
+                } else {
+                    "Run range wipe (DRY-RUN)"
+                };
+                let color = if live { palette.critical } else { palette.accent };
+                if ui
+                    .add_enabled(
+                        can_run,
+                        egui::Button::new(RichText::new(label).color(color)),
+                    )
+                    .clicked()
+                {
+                    let range = DiskRange {
+                        device: PathBuf::from(format!("/dev/{}", dev.name)),
+                        start,
+                        end,
+                        label: format!("/dev/{} [{:?}..{:?}]", dev.name, start, end),
+                    };
+                    let config = WipeConfig::preset(form.preset);
+                    let report = disk_wipe::wipe_range(&range, &config, !live);
+                    form.last_report = Some(report);
+                }
+                ui.label(
+                    RichText::new(format!(
+                        "range: {} bytes",
+                        format_bytes(end.saturating_sub(start))
+                    ))
+                    .color(palette.text_subtle)
+                    .small(),
+                );
+            });
+
+            if !range_valid {
+                ui.label(
+                    RichText::new(
+                        "Range invalid: end must be greater than start and within the device size.",
+                    )
+                    .color(palette.critical)
+                    .small(),
+                );
+            }
+            if !name_matches {
+                ui.label(
+                    RichText::new("Device name confirmation doesn't match.")
+                        .color(palette.critical)
+                        .small(),
+                );
+            }
+
+            if let Some(report) = &form.last_report {
+                ui.add_space(6.0);
+                let color = if report.success {
+                    palette.ok
+                } else {
+                    palette.critical
+                };
+                ui.label(
+                    RichText::new(format!(
+                        "{}: {} pass(es) · {} written",
+                        if report.success { "OK" } else { "FAIL" },
+                        report.passes_run,
+                        format_bytes(report.bytes_written)
+                    ))
+                    .color(color)
+                    .strong(),
+                );
+                for err in &report.errors {
+                    ui.label(
+                        RichText::new(format!("  · {}", err))
+                            .color(palette.text_dim)
+                            .small(),
+                    );
+                }
+            }
+        });
 }
