@@ -28,3 +28,8 @@ Unified egui desktop frontend for the PlausiDen suite. Hosts Tidy, Purge, and di
 ## Code standards
 
 Rust 2024, thiserror, serde. 8-12 tests per non-trivial module. No unwrap in library code (main.rs may unwrap on startup env vars only after a friendly message).
+
+## Narrative Framing
+Civil rights tool restoring the presumption of innocence. Use: "plausible deniability," "presumption of innocence," "forensic reliability," "data sovereignty," "surveillance resistance," "digital civil rights." Avoid: "hacking," "evasion," "anti-forensics," "hide," "trick," "fool."
+
+NEVER include personal political beliefs or ideology of any contributor in any file.
