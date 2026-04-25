@@ -1,0 +1,16 @@
+# Dependabot config — library-crate convention.
+#
+# This crate does NOT commit Cargo.lock (per library convention). Major-
+# version updates require API-level code work, so we restrict Dependabot
+# to minor + patch bumps only.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
