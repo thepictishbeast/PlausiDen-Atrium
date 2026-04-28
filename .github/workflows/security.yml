@@ -12,13 +12,28 @@ on:
 # for the full justification: Kali OS package can't parse CVSS:4.0,
 # rustup rust-src download bricks the install). cargo-deny check
 # advisories covers the same RUSTSEC database.
+#
+# Atrium uses `plausiden-tidy = { path = "../PlausiDen-Tidy" }`, so
+# the sibling repo must be checked out alongside before cargo-deny
+# can resolve the path dep. EmbarkStudios/cargo-deny-action@v2 runs
+# in a Docker container with only /github/workspace mounted, so we
+# call cargo-deny directly on the self-hosted runner instead — the
+# runner has cargo-deny pre-installed.
 
 jobs:
   deny:
     name: Cargo Deny
     runs-on: [self-hosted, linux, x64, plausiden]
     steps:
-      - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Checkout Atrium
+        uses: actions/checkout@v4
         with:
-          command: check advisories sources
+          path: PlausiDen-Atrium
+      - name: Checkout PlausiDen-Tidy (sibling path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: thepictishbeast/PlausiDen-Tidy
+          path: PlausiDen-Tidy
+      - name: Run cargo-deny
+        working-directory: PlausiDen-Atrium
+        run: cargo deny check advisories sources
