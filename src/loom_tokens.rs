@@ -29,6 +29,26 @@ pub mod color {
     pub const DANGER: Color32 = Color32::from_rgb(220, 40, 40);
     /// `success` — emerald-600 — `hsl(160 84% 30%)`
     pub const SUCCESS: Color32 = Color32::from_rgb(12, 141, 98);
+    /// `warn` — amber-600 — `hsl(28 80% 50%)`
+    pub const WARN: Color32 = Color32::from_rgb(230, 121, 25);
+    /// `warn-bg` — amber-50 — `hsl(40 90% 93%)`
+    pub const WARN_BG: Color32 = Color32::from_rgb(253, 243, 221);
+    /// `tier-medium` — yellow-500 — `hsl(50 80% 56%)`
+    pub const TIER_MEDIUM: Color32 = Color32::from_rgb(233, 203, 53);
+    /// `border-strong` — slate-300 — `hsl(212 16% 82%)`
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(202, 209, 216);
+    /// `accent-soft` — blue-200 — `hsl(220 75% 80%)`
+    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(166, 191, 242);
+    /// `accent-glow` — blue-100 — `hsl(220 75% 90%)`
+    pub const ACCENT_GLOW: Color32 = Color32::from_rgb(210, 223, 249);
+    /// `gradient-a` — blue-500 — `hsl(218 78% 56%)`
+    pub const GRADIENT_A: Color32 = Color32::from_rgb(55, 119, 230);
+    /// `gradient-b` — purple-500 — `hsl(269 65% 57%)`
+    pub const GRADIENT_B: Color32 = Color32::from_rgb(143, 74, 217);
+    /// `bg-canvas` — slate-100 — `hsl(225 33% 99%)`
+    pub const BG_CANVAS: Color32 = Color32::from_rgb(252, 252, 253);
+    /// `bg-overlay` — slate-200 — `hsl(220 28% 95%)`
+    pub const BG_OVERLAY: Color32 = Color32::from_rgb(239, 241, 246);
 }
 
 /// Dark-theme palette mirror — same role names, dark-resolved values.
@@ -52,6 +72,26 @@ pub mod color_dark {
     pub const DANGER: Color32 = Color32::from_rgb(230, 101, 101);
     /// `success` — emerald-400 — `hsl(160 84% 55%)`
     pub const SUCCESS: Color32 = Color32::from_rgb(44, 237, 172);
+    /// `warn` — amber-400 — `hsl(33 100% 66%)`
+    pub const WARN: Color32 = Color32::from_rgb(255, 177, 82);
+    /// `warn-bg` — amber-950 — `hsl(33 50% 16%)`
+    pub const WARN_BG: Color32 = Color32::from_rgb(61, 43, 20);
+    /// `tier-medium` — yellow-400 — `hsl(50 75% 65%)`
+    pub const TIER_MEDIUM: Color32 = Color32::from_rgb(233, 210, 99);
+    /// `border-strong` — slate-700 — `hsl(218 22% 30%)`
+    pub const BORDER_STRONG: Color32 = Color32::from_rgb(60, 72, 93);
+    /// `accent-soft` — blue-700 — `hsl(222 41% 47%)`
+    pub const ACCENT_SOFT: Color32 = Color32::from_rgb(71, 100, 169);
+    /// `accent-glow` — blue-200 — `hsl(220 100% 85%)`
+    pub const ACCENT_GLOW: Color32 = Color32::from_rgb(179, 204, 255);
+    /// `gradient-a` — blue-400 — `hsl(218 83% 65%)`
+    pub const GRADIENT_A: Color32 = Color32::from_rgb(92, 146, 240);
+    /// `gradient-b` — purple-400 — `hsl(272 84% 65%)`
+    pub const GRADIENT_B: Color32 = Color32::from_rgb(171, 91, 241);
+    /// `bg-canvas` — slate-950 — `hsl(220 33% 6%)`
+    pub const BG_CANVAS: Color32 = Color32::from_rgb(10, 14, 20);
+    /// `bg-overlay` — slate-800 — `hsl(220 24% 20%)`
+    pub const BG_OVERLAY: Color32 = Color32::from_rgb(39, 47, 63);
 }
 
 /// Spacing scale. `*_REM` for layout that multiplies by base font size,

@@ -105,69 +105,66 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Dark-theme palette. Every field is loom-sourced — no inline
+    /// Color32 literals. `text_subtle` is the only field that
+    /// doesn't have a 1:1 loom role yet; map it to ink_muted (the
+    /// closest equivalent) until a future palette extension splits
+    /// the muted scale into two stops.
     pub const DARK: Palette = Palette {
-        bg: Color32::from_rgb(10, 13, 20),
-        bg_panel: Color32::from_rgb(20, 24, 34),
-        bg_elevated: Color32::from_rgb(28, 33, 48),
-        bg_overlay: Color32::from_rgb(38, 44, 62),
-        // border / border_strong: not yet in Loom (Loom only ships
-        // a single `border` slate-200; Atrium needs the strong
-        // pair). Stay native pending Loom palette extension.
-        border: Color32::from_rgb(36, 43, 60),
-        border_strong: Color32::from_rgb(60, 70, 95),
+        bg: loom_dark::BG_CANVAS,
+        bg_panel: loom_dark::SURFACE,
+        bg_elevated: loom_dark::SURFACE_MUTED,
+        bg_overlay: loom_dark::BG_OVERLAY,
+        border: loom_dark::BORDER,
+        border_strong: loom_dark::BORDER_STRONG,
 
-        // text / text_dim sourced from loom — same role names,
-        // dark-resolved values.
         text: loom_dark::INK,
         text_dim: loom_dark::INK_MUTED,
-        text_subtle: Color32::from_rgb(100, 108, 128),
+        text_subtle: loom_dark::INK_MUTED,
 
-        // accent sourced from loom primary (dark resolution).
         accent: loom_dark::PRIMARY,
-        accent_soft: Color32::from_rgb(70, 95, 170),
-        accent_glow: Color32::from_rgb(180, 200, 255),
-        gradient_a: Color32::from_rgb(91, 141, 239),
-        gradient_b: Color32::from_rgb(164, 91, 239),
-        // ok / critical from loom success / danger.
+        accent_soft: loom_dark::ACCENT_SOFT,
+        accent_glow: loom_dark::ACCENT_GLOW,
+        gradient_a: loom_dark::GRADIENT_A,
+        gradient_b: loom_dark::GRADIENT_B,
         ok: loom_dark::SUCCESS,
-        warn: Color32::from_rgb(255, 180, 84),
-        warn_bg: Color32::from_rgb(60, 42, 20),
+        warn: loom_dark::WARN,
+        warn_bg: loom_dark::WARN_BG,
         critical: loom_dark::DANGER,
 
-        // Importance tiers reuse the state colours from loom where
-        // they map cleanly; the rest stay native.
         tier_critical: loom_dark::DANGER,
-        tier_high: Color32::from_rgb(255, 180, 84),
-        tier_medium: Color32::from_rgb(232, 207, 92),
+        tier_high: loom_dark::WARN,
+        tier_medium: loom_dark::TIER_MEDIUM,
         tier_low: loom_dark::PRIMARY,
         tier_trash: loom_dark::SUCCESS,
     };
 
+    /// Light-theme palette — fully loom-sourced mirror of DARK.
     pub const LIGHT: Palette = Palette {
-        bg: Color32::from_rgb(250, 250, 253),
+        bg: loom_light::BG_CANVAS,
         bg_panel: loom_light::SURFACE,
         bg_elevated: loom_light::SURFACE_MUTED,
-        bg_overlay: Color32::from_rgb(235, 238, 246),
+        bg_overlay: loom_light::BG_OVERLAY,
         border: loom_light::BORDER,
-        border_strong: Color32::from_rgb(200, 205, 218),
+        border_strong: loom_light::BORDER_STRONG,
 
         text: loom_light::INK,
         text_dim: loom_light::INK_MUTED,
-        text_subtle: Color32::from_rgb(140, 148, 170),
+        text_subtle: loom_light::INK_MUTED,
 
         accent: loom_light::PRIMARY,
-        accent_soft: Color32::from_rgb(166, 188, 240),
-        accent_glow: Color32::from_rgb(210, 224, 250),
-        gradient_a: Color32::from_rgb(60, 120, 228),
-        gradient_b: Color32::from_rgb(142, 76, 214),
+        accent_soft: loom_light::ACCENT_SOFT,
+        accent_glow: loom_light::ACCENT_GLOW,
+        gradient_a: loom_light::GRADIENT_A,
+        gradient_b: loom_light::GRADIENT_B,
         ok: loom_light::SUCCESS,
-        warn: Color32::from_rgb(216, 128, 40),
-        warn_bg: Color32::from_rgb(253, 242, 220),
+        warn: loom_light::WARN,
+        warn_bg: loom_light::WARN_BG,
         critical: loom_light::DANGER,
 
         tier_critical: loom_light::DANGER,
-        tier_high: Color32::from_rgb(216, 128, 40),
-        tier_medium: Color32::from_rgb(196, 162, 40),
+        tier_high: loom_light::WARN,
+        tier_medium: loom_light::TIER_MEDIUM,
         tier_low: loom_light::PRIMARY,
         tier_trash: loom_light::SUCCESS,
     };
