@@ -1,6 +1,6 @@
 # PlausiDen-Atrium
 
-Unified desktop frontend for the [PlausiDen](https://github.com/redcaptian1917) civil rights toolkit. Atrium is the entry hall — the friendly, approachable front door to Tidy (everyday cleanup), Purge (antiforensic destruction), and the disk analyzers. One window, all the tools.
+Unified desktop frontend for the [PlausiDen](https://github.com/thepictishbeast) civil rights toolkit. Atrium is the entry hall — the friendly, approachable front door to Tidy (everyday cleanup), Purge (antiforensic destruction), and the disk analyzers. One window, all the tools.
 
 ## Design principles
 
