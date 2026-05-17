@@ -27,7 +27,7 @@ on:
 jobs:
   deny-deferred:
     name: Cargo Deny (deferred)
-    runs-on: [self-hosted, linux, x64, plausiden]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Note deferral
